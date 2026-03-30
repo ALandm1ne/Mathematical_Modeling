@@ -5,5 +5,6 @@ Grid_Height: 2 #单位:模拟点(数据行数)
 
 Time_Step: 0.1 #单位:h
 Grid_Step: 0.01 #单位:km
+Total_time: 10 #单位:h
 
 Velocity_Target: 30 #单位:km/h

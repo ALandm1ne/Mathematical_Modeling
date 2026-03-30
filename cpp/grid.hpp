@@ -47,10 +47,13 @@ class GRID {
 			grid_ = grid;
 		} catch (const std::ifstream::failure & e) {
 			std::cerr << "[ERROR] File operation error: " << e.what() << std::endl;
+			exit(EXIT_FAILURE);
 		} catch (const std::invalid_argument & e) {
 			std::cerr << "[ERROR] Invalid data format: " << e.what() << std::endl;
+			exit(EXIT_FAILURE);
 		} catch (const std::exception & e) {
 			std::cerr << "[ERROR] Error loading grid: " << e.what() << std::endl;
+			exit(EXIT_FAILURE);
 		}
 		infile.close();
 
@@ -112,7 +115,21 @@ class GRID {
 			}
 		} catch (const std::ofstream::failure & e) {
 			std::cerr << "[ERROR] Error writing to file: " << e.what() << std::endl;
+			exit(EXIT_FAILURE);
 		}
 		outfile.close();
 	}
+
+	// template <typename Func>
+	// void update_grid(Func func) {
+	// 	MAP_DOUBLE new_grid;
+	// 	for (auto i = 0; i < grid_height_; ++i) {
+	// 		std::vector<double> new_row;
+	// 		for (auto j = 0; j < grid_length_; ++j) {
+	// 			new_row.push_back(func(grid_[i][j], i, j));
+	// 		}
+	// 		new_grid.push_back(new_row);
+	// 	}
+	// 	// grid_ = new_grid;
+	// }
 };

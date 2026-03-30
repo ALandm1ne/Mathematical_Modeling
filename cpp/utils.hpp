@@ -17,6 +17,7 @@ namespace file {
 		int grid_height;            // 网格高度，单位：模拟点
 		double time_step;           // 时间步长，单位：小时
 		double grid_step;           // 网格步长，单位：公里
+		double total_time;          // 总的模拟时长，单位：小时
 		double velocity_target;     // 目标速度，单位：公里/小时
 	};
 
@@ -27,6 +28,7 @@ namespace file {
 		config.grid_file_path = yaml["Grid_File_Path"].as<std::string>();
 		config.time_step = yaml["Time_Step"].as<double>();
 		config.grid_step = yaml["Grid_Step"].as<double>();
+		config.total_time = yaml["Total_time"].as<double>();
 		config.velocity_target = yaml["Velocity_Target"].as<double>();
 		config.grid_length = yaml["Grid_Length"].as<int>();
 		config.grid_height = yaml["Grid_Height"].as<int>();
