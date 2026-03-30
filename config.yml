@@ -1,4 +1,9 @@
-Time_Step: 0.1        #单位:h
-Grid_Step: 0.01       #单位:km
+Grid_File_Path: test_grid.txt # 网格数据文件路径
 
-Velocity_Target: 30   #单位:km/h
+Grid_Length: 3 #单位:模拟点(数据列数)
+Grid_Height: 2 #单位:模拟点(数据行数)
+
+Time_Step: 0.1 #单位:h
+Grid_Step: 0.01 #单位:km
+
+Velocity_Target: 30 #单位:km/h

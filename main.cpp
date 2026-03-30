@@ -4,18 +4,25 @@
 #include <string>
 #include <vector>
 
+#include "grid.hpp"
 #include "utils.hpp"
 
 using namespace std;
 
 int main() {
-	// 从配置文件中加载参数
-	config::Config config = config::load_config("config.yml");
+	std::cout << "------------------------------------------" << std::endl;
+	std::cout << "[INFO] main:" << std::endl;
+	std::cout << "------------------------------------------" << std::endl;
 
-	// 输出加载的配置参数
-	cout << "Time Step: " << config.time_step << " hours" << endl;
-	cout << "Grid Step: " << config.grid_step << " km" << endl;
-	cout << "Velocity Target: " << config.velocity_target << " km/h" << endl;
+	// 从配置文件中加载参数
+	file::Config config = file::load_config("config.yml");
+
+	// 从网格文件中加载网格数据
+	GRID grid;
+	grid.load_grid(config.grid_file_path, ",");
+	grid.check_grid(config.grid_length, config.grid_height);
+	grid.output_grid();
+	grid.save_grid("test_grid_output.txt", ",");
 
 	return 0;
 }
