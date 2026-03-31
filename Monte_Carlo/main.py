@@ -7,7 +7,7 @@ from matplotlib.markers import MarkerStyle  # 用于自定义无人机标记样�
 # --- 1. 参数设置 ---
 AREA_WIDTH_KM = 306.0  # 模拟区域宽度，单位 km（经度方向跨度）
 AREA_HEIGHT_KM = 444.0  # 模拟区域高度，单位 km（纬度方向跨度）
-N_PARTICLES = 10000  # 初始粒子数，表示潜在目标样本数量
+N_PARTICLES = 1000000  # 初始粒子数，表示潜在目标样本数量
 TARGET_SPEED_KM = 30.0  # 目标运动速度，单位 km/h
 UAV_SPEED_KM = 150.0  # 无人机巡航速度，单位 km/h
 UAV_SCAN_RADIUS_KM = 15.0  # 无人机传感器扫描半径，单位 km
@@ -119,50 +119,58 @@ def is_uav_2_scan_radius_from_kpt():
 
 # uav是否完成扫描的判定：当无人机在顶边且向上，或在底边且向下时，认为完成扫描
 def is_uav_complete_scan():
-    return (is_uav_at_top_edge() and is_uav_up()) or (is_uav_at_bottom_edge() and is_uav_down())
+    return (is_uav_at_top_edge() and is_uav_at_right_edge() and is_uav_up()) or (is_uav_at_bottom_edge() and is_uav_at_right_edge() and is_uav_down())
 
 # ------------------------------------------
  
-### 可视化
+# --- 4. 实时可视化准备 ---
+plt.ion()  # 开启交互模式
+fig, ax = plt.subplots(figsize=(8, 6))
 
-# 计算区域 (x1,y1) 到 (x2,y2) 内粒子的数量，返回密度值。
-def density(x1,y1,x2,y2):
-    count = np.sum((particle_locations[:, 0] >= x1) & (particle_locations[:, 0] < x2) &
-                   (particle_locations[:, 1] >= y1) & (particle_locations[:, 1] < y2))
-    area = (x2 - x1) * (y2 - y1) / (SCALE * SCALE)  # 区域面积，单位 km^2
-    return count / area if area > 0 else 0
+# 初始化热力图网格
+grid_size = 5 * SCALE  # 调整网格大小以平衡性能和清晰度
+x_bins = np.arange(0, AREA_WIDTH_U + grid_size, grid_size)
+y_bins = np.arange(0, AREA_HEIGHT_U + grid_size, grid_size)
 
-# 绘制粒子密度热图，显示区域内粒子分布情况。
-def plot_density():
-    grid_size = 10 * SCALE  # 10 km 网格
-    x_bins = np.arange(0, AREA_WIDTH_U + grid_size, grid_size)
-    y_bins = np.arange(0, AREA_HEIGHT_U + grid_size, grid_size)
-    density_grid = np.zeros((len(y_bins)-1, len(x_bins)-1))
-    
-    for i in range(len(x_bins)-1):
-        for j in range(len(y_bins)-1):
-            density_grid[j, i] = density(x_bins[i], y_bins[j], x_bins[i+1], y_bins[j+1])
-    
-    plt.imshow(density_grid, extent=(0, AREA_WIDTH_KM, 0, AREA_HEIGHT_KM), origin='lower', cmap='viridis')
-    plt.colorbar(label='Particle Density (particles/km²)')
-    plt.title('Particle Density Heatmap')
-    plt.xlabel('X (km)')
-    plt.ylabel('Y (km)')
-    plt.show()
+# 创建初始空图层
+im = ax.imshow(np.zeros((len(y_bins)-1, len(x_bins)-1)), 
+               extent=(0, AREA_WIDTH_KM, 0, AREA_HEIGHT_KM), 
+               origin='lower', cmap='viridis', animated=True)
+cbar = fig.colorbar(im, ax=ax, label='Particle Density (particles/km²)')
+uav_dot, = ax.plot([], [], 'ro', markersize=10, label='UAV') # 绘制无人机位置点
+ax.set_title('Real-time Particle Density')
+ax.set_xlabel('X (km)')
+ax.set_ylabel('Y (km)')
+ax.legend()
+
+def get_density_data(p_locs):
+    """计算当前所有格子的密度矩阵"""
+    # 使用 numpy 的直方图函数，比双重循环快得多
+    counts, _, _ = np.histogram2d(
+        p_locs[:, 1], p_locs[:, 0], 
+        bins=[y_bins, x_bins]
+    )
+    area_km2 = (grid_size / SCALE)**2
+    return counts / area_km2
 
 # ------------------------------------------
 
-# 循环开始
-print("开始搜索模拟...")  # 启动提示
-for step in range(MAX_STEPS):  # 最大迭代 MAX_STEPS 个时间步
+# --- 5. 模拟循环 ---
+print("开始搜索模拟...")
+for step in range(MAX_STEPS):
     # A. 目标移动
     particle_locations, particle_angles = update_particles(particle_locations, particle_angles, target_step_u)
 
-    # B. 无人机沿简化的 Z 字路径移动（示例策略）
-    uav_pos[0] += UAV_STEP_U * uav_direction_x  # 无人机 x 坐标更新
-    uav_pos[1] += UAV_STEP_U * uav_direction_y  # 无人机 y 坐标更新
+    # B. 无人机移动逻辑
+    uav_pos[0] += UAV_STEP_U * uav_direction_x
+    uav_pos[1] += UAV_STEP_U * uav_direction_y
     
-    ### 边界判断:变向
+    # 边界判断:变向
+    # 到达右上角/右下角后终止
+    if (is_uav_complete_scan()):
+        print(f"无人机完成扫描！耗时: {time_elapsed:.2f} 小时")
+        break
+    
     # 向上到达顶边后向右转
     if (is_uav_up() and is_uav_at_top_edge()):  
         uav_pos[1] = AREA_HEIGHT_U - UAV_SCAN_RADIUS_U  # 修正 y 坐标
@@ -186,31 +194,35 @@ for step in range(MAX_STEPS):  # 最大迭代 MAX_STEPS 个时间步
         uav_last_kpt_x = uav_pos[0]  # 记录kpt的 x 坐标
         uav_last_kpt_y = uav_pos[1]  # 记录kpt的 y 坐标
 
-    # 到达右上角/右下角后终止
-    if (is_uav_complete_scan()):
-        print(f"无人机完成扫描！耗时: {time_elapsed:.2f} 小时")
-        break
-
     # C. 判定捕获
-    delta = particle_locations - uav_pos  # 每个粒子到无人机位置的坐标差
-    d2 = delta[:, 0] * delta[:, 0] + delta[:, 1] * delta[:, 1]  # 粒子到无人机的距离平方
-    r2 = UAV_SCAN_RADIUS_U * UAV_SCAN_RADIUS_U  # 扫描半径平方
-
-    # 仅保留未被扫描到的粒子
-    keep_mask = d2 > r2  # 只有距离大于扫描半径的粒子才保留
-    particle_locations = particle_locations[keep_mask]  # 更新粒子位置数组，仅保留未被捕获的粒子
+    delta = particle_locations - uav_pos
+    keep_mask = np.sum(delta**2, axis=1) > (UAV_SCAN_RADIUS_U**2)
+    particle_locations = particle_locations[keep_mask]
     particle_angles = particle_angles[keep_mask]
-
+    
     history_count.append(len(particle_locations))  # 记录当前剩余粒子数
     time_elapsed += DT  # 更新时间累计
-    
-    plot_density()  # 可视化当前粒子密度分布（可选，调试时使用）
 
-    if len(particle_locations) == 0:  # 若已无粒子，则提前结束仿真
-        print(f"目标已全部锁定！耗时: {time_elapsed:.2f} 小时")
+    # D. 实时更新绘图 (建议每隔 N 个步长更新一次以提高运行速度)
+    if step % 5 == 0: 
+        density_matrix = get_density_data(particle_locations)
+        im.set_data(density_matrix)
+        im.set_clim(vmin=0, vmax=np.max(density_matrix) if len(particle_locations)>0 else 1)
+        
+        # 更新无人机位置标记
+        uav_dot.set_data([uav_pos[0]/SCALE], [uav_pos[1]/SCALE])
+        
+        plt.draw()
+        plt.pause(0.001) # 暂停微小时间以刷新画布
+
+    # 终止条件
+    if is_uav_complete_scan() or len(particle_locations) == 0:
         break
 
-# --- 5. 结果可视化 ---
+plt.ioff() # 关闭交互模式
+plt.show() # 保持最后结果显示
+
+# --- 6. 结果可视化 ---
 plt.figure(figsize=(10, 5))  # 创建画布
 plt.plot(history_count)  # 绘制剩余粒子数量曲线
 plt.title("Remaining Potential Target Particles Over Time")  # 图标题
