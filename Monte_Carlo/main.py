@@ -22,7 +22,7 @@ from matplotlib.markers import MarkerStyle  # 用于自定义无人机标记样�
 # --- 参数设置 ---
 AREA_WIDTH_KM = 306.0  # 模拟区域宽度，单位 km（经度方向跨度）
 AREA_HEIGHT_KM = 444.0  # 模拟区域高度，单位 km（纬度方向跨度）
-N_PARTICLES = 1000000  # 初始粒子数，表示潜在目标样本数量
+N_PARTICLES = 10000000  # 初始粒子数，表示潜在目标样本数量
 TARGET_SPEED_KM = 30.0  # 目标运动速度，单位 km/h
 UAV_SPEED_KM = 150.0  # 无人机巡航速度，单位 km/h
 UAV_SCAN_RADIUS_KM = 20.0  # 无人机传感器扫描半径，单位 km
@@ -39,9 +39,23 @@ UAV_SCAN_RADIUS_U = int(round(UAV_SCAN_RADIUS_KM * SCALE))  # 扫描半径（整
 
 # --- 初始化粒子 (目标) ---
 # 粒子位置数组 shape=(N,2)，每行是 [x, y]，使用 int64 避免累计浮点误差
+# 使用分层均匀采样：将区域划分成规则网格，每个网格内随机投放 1 个粒子，使初始密度更均匀
 particle_locations = np.empty((N_PARTICLES, 2), dtype=np.int64)  # 初始化粒子位置数组: N行2列，整数类型
-particle_locations[:, 0] = (np.random.rand(N_PARTICLES) * AREA_WIDTH_U ).astype(np.int64)  # x 坐标均匀随机
-particle_locations[:, 1] = (np.random.rand(N_PARTICLES) * AREA_HEIGHT_U).astype(np.int64)  # y 坐标均匀随机
+grid_nx = max(1, int(math.sqrt(N_PARTICLES * AREA_WIDTH_U / AREA_HEIGHT_U)))
+grid_ny = int(math.ceil(N_PARTICLES / grid_nx))
+cell_indices = np.arange(N_PARTICLES, dtype=np.int64)
+cell_x = cell_indices % grid_nx
+cell_y = cell_indices // grid_nx
+jitter_x = np.random.rand(N_PARTICLES)
+jitter_y = np.random.rand(N_PARTICLES)
+particle_locations[:, 0] = np.minimum(
+    AREA_WIDTH_U,
+    np.rint(((cell_x + jitter_x) / grid_nx) * AREA_WIDTH_U).astype(np.int64),
+)
+particle_locations[:, 1] = np.minimum(
+    AREA_HEIGHT_U,
+    np.rint(((cell_y + jitter_y) / grid_ny) * AREA_HEIGHT_U).astype(np.int64),
+)
 particle_angles = np.random.rand(N_PARTICLES) * 2 * np.pi  # 每个粒子的运动方向角（弧度）[0, 2π)均匀随机
 
 # --- 初始化无人机 ---
@@ -70,7 +84,7 @@ uav_traj_y_km = [uav_pos_u[1] / SCALE]
 particle_step_u = int(round(TARGET_SPEED_KM * DT * SCALE))  # 目标每步移动的距离 (整数单位)
 
 # --- 绘制设置 ---
-GRID_SIZE_U = 5 * SCALE  # 调整网格大小以平衡性能和清晰度
+GRID_SIZE_U = 2 * SCALE  # 调整网格大小以平衡性能和清晰度
 
 # ------------------------------------------移动控制相关函数------------------------------------------
 
@@ -87,6 +101,9 @@ def update_particles(p, ang, step_u):
     :return: 更新后的粒子位置数组和方向角数组
     """
     
+    # 每个 step 为每个粒子重置随机方向
+    ang[:] = np.random.rand(ang.shape[0]) * 2 * np.pi
+
     dx = np.rint(step_u * np.cos(ang)).astype(np.int64)  # x 方向位移（按角度投影后取整）
     dy = np.rint(step_u * np.sin(ang)).astype(np.int64)  # y 方向位移（按角度投影后取整）
     p[:, 0] += dx  # 批量更新所有粒子的 x 坐标
