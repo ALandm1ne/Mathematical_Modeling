@@ -12,6 +12,8 @@
 
 
 
+import matplotlib
+matplotlib.use('QtAgg')  # 强制使用 QtAgg 后端以支持交互式绘图
 import math  # 数学库，用于角度计算和反弹处理
 import numpy as np  # 数值计算库，用于向量化更新大量粒子
 import matplotlib.pyplot as plt  # 绘图库，用于画剩余粒子数量曲线
