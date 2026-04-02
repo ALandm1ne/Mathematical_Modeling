@@ -1,0 +1,4 @@
+{
+    "python.defaultInterpreterPath": "${workspaceFolder}/Monte_Carlo/.venv/bin/python",
+    "python.analysis.typeCheckingMode": "basic"
+}
