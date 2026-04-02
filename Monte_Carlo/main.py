@@ -63,6 +63,10 @@ uav_kpt_to__y_u = 0  # 无人机下次kpt的 y 坐标 (整数单位)
 history_count = []  # 记录每一步剩余粒子数，用于最终绘图
 time_elapsed = 0  # 累计仿真时间（小时）
 
+# UAV 轨迹缓存（单位 km，用于实时绘图）
+uav_traj_x_km = [uav_pos_u[0] / SCALE]
+uav_traj_y_km = [uav_pos_u[1] / SCALE]
+
 particle_step_u = int(round(TARGET_SPEED_KM * DT * SCALE))  # 目标每步移动的距离 (整数单位)
 
 # --- 绘制设置 ---
@@ -331,6 +335,7 @@ im = window.imshow(
             )    
 cbar = fig.colorbar(im, ax=window, label='Particle Density (particles/km²)')
 uav_dot, = window.plot([], [], 'ro', markersize=3 , label='UAV') # 绘制无人机位置点
+uav_path, = window.plot([], [], color='cyan', linewidth=1.2, alpha=0.9, label='UAV Path')
 window.set_title('Real-time Particle Density')
 window.set_xlabel('X (km)')
 window.set_ylabel('Y (km)')
@@ -366,54 +371,84 @@ def get_counts_in_grids(p_locs):
     # return counts / area_km2
     return counts  # 返回每个格子内的粒子数量矩阵
 
+
+def update_status_panel(remaining_particles):
+    """刷新左侧状态面板文本。"""
+    uav_x_km = uav_pos_u[0] / SCALE
+    uav_y_km = uav_pos_u[1] / SCALE
+    uav_angle_deg = (uav_angle * 180.0 / np.pi) % 360.0
+    remaining_ratio = (remaining_particles / N_PARTICLES) * 100.0
+    status_text.set_text(
+        f"UAV: ({uav_x_km:.2f}, {uav_y_km:.2f}) km\n"
+        f"Angle: {uav_angle_deg:.1f} deg\n"
+        f"Time: {time_elapsed:.2f} h\n"
+        f"Particles: {remaining_particles}/{N_PARTICLES} ({remaining_ratio:.2f}%)"
+    )
+
+
+def remove_scanned_particles(p_locs, p_angles):
+    """按无人机扫描半径剔除粒子。"""
+    delta = p_locs - uav_pos_u
+    keep_mask = np.sum(delta**2, axis=1) > (UAV_SCAN_RADIUS_U**2)
+    return p_locs[keep_mask], p_angles[keep_mask]
+
+
+def run_one_step():
+    """执行一个仿真步；返回 False 表示应终止仿真。"""
+    global particle_locations, particle_angles, time_elapsed
+
+    # A. 目标移动
+    particle_locations, particle_angles = update_particles(
+        particle_locations,
+        particle_angles,
+        particle_step_u,
+    )
+
+    # B. 无人机移动
+    if not update_uav():
+        return False
+
+    # C. 扫描并剔除被覆盖粒子
+    particle_locations, particle_angles = remove_scanned_particles(
+        particle_locations,
+        particle_angles,
+    )
+
+    history_count.append(len(particle_locations))
+    time_elapsed += DT
+
+    return (not is_uav_at_end_corner()) and (len(particle_locations) > 0)
+
+
+def update_visualization():
+    """按刷新频率更新热力图、无人机标记和状态面板。"""
+
+    density_matrix = get_counts_in_grids(particle_locations)
+    im.set_data(density_matrix)
+
+    # 更新无人机位置标记
+    uav_dot.set_data([uav_pos_u[0] / SCALE], [uav_pos_u[1] / SCALE])
+
+    # 更新无人机轨迹
+    uav_traj_x_km.append(uav_pos_u[0] / SCALE)
+    uav_traj_y_km.append(uav_pos_u[1] / SCALE)
+    uav_path.set_data(uav_traj_x_km, uav_traj_y_km)
+
+    update_status_panel(len(particle_locations))
+
+    plt.draw()
+    plt.pause(0.001)  # 暂停微小时间以刷新画布
+
 # ------------------------------------------
 
 # --- 5. 模拟循环 ---
 print("Starting search simulation...")
 for step in range(MAX_STEPS):
-    # A. 目标移动
-    particle_locations, particle_angles = update_particles(particle_locations, particle_angles, particle_step_u)
-
-    # B. 无人机移动
-    if update_uav() == False:
+    if not run_one_step():
         break
     
-    # C. 无人机扫描并剔除被扫描到的粒子
-    delta = particle_locations - uav_pos_u  # 计算粒子位置与无人机位置的差值向量
-    keep_mask = np.sum(delta**2, axis=1) > (UAV_SCAN_RADIUS_U**2)   # 保留扫描半径外的粒子，剔除扫描半径内的粒子
-    particle_locations = particle_locations[keep_mask]  # 更新粒子位置数组，保留未被扫描到的粒子
-    particle_angles = particle_angles[keep_mask]    # 同步更新粒子角度数组，保持与位置数组对应
-    
-    history_count.append(len(particle_locations))  # 记录当前剩余粒子数
-    time_elapsed += DT  # 更新时间累计
-
-    # D. 实时更新绘图 (建议每隔 N 个步长更新一次以提高运行速度)
-    if step % STEPS_TO_UPDATE == 0: 
-        density_matrix = get_counts_in_grids(particle_locations)
-        im.set_data(density_matrix)
-        
-        # 更新无人机位置标记
-        uav_dot.set_data([uav_pos_u[0]/SCALE], [uav_pos_u[1]/SCALE])
-
-        # 更新状态文本
-        uav_x_km = uav_pos_u[0] / SCALE
-        uav_y_km = uav_pos_u[1] / SCALE
-        uav_angle_deg = (uav_angle * 180.0 / np.pi) % 360.0
-        remaining_particles = len(particle_locations)
-        remaining_ratio = (remaining_particles / N_PARTICLES) * 100.0
-        status_text.set_text(
-            f"UAV: ({uav_x_km:.2f}, {uav_y_km:.2f}) km\n"
-            f"Angle: {uav_angle_deg:.1f} deg\n"
-            f"Time: {time_elapsed:.2f} h\n"
-            f"Particles: {remaining_particles}/{N_PARTICLES} ({remaining_ratio:.2f}%)"
-        )
-        
-        plt.draw()
-        plt.pause(0.001) # 暂停微小时间以刷新画布
-
-    # 终止条件
-    if is_uav_at_end_corner() or len(particle_locations) == 0:
-        break
+    if step % STEPS_TO_UPDATE == 0:
+        update_visualization()
 
 
 
