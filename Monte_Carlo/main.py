@@ -1,3 +1,17 @@
+'''
+在现代军事活动中，无人侦察机的应用日益广泛，特别是在军事冲突中，利用无人机追踪敌方机动目标，可以为本方提供预警或者指引本方武器精准打击对方目标。
+2025年长春航空展上，国产BZK-005中高空远程无人侦察机BZK-005正式亮相，它能够在18000米的高空持续飞行40小时，搭载合成孔径雷达可以从18公里的高度看清地面车牌号，配备30倍光学变焦吊舱。
+
+假设已知敌方机动目标在海上一定范围内，如何组织本方多架BZK-005无人机进行协同搜索？
+    1、请建立数学模型，根据目标大致范围、BZK-005出发点等指标，确定调用多少架无人机、每架无人机的飞行路线。
+    2、假设已知目标为一艘长182米、宽24米的舰船，在海上一片矩形区域内以每小时30公里速度机动(不离开此区域)，该区域左上角顶点坐标(124E, 25N)，右下角顶点坐标(127E, 21N)。
+从温州龙湾机场起飞2架BZK-005无人机，请利用你的模型计算出最少需要多长时间能完成搜索，并给出每架无人机的搜索路径。如果希望在10小时内找到目标，最少需要多少架BZK-005无人机？
+
+注：题目中未提及的变量、参数，可以根据实际情况自行设置；如果找不到参数，可根据类似事物自行推定。
+'''
+
+
+
 import math  # 数学库，用于角度计算和反弹处理
 import numpy as np  # 数值计算库，用于向量化更新大量粒子
 import matplotlib.pyplot as plt  # 绘图库，用于画剩余粒子数量曲线
@@ -11,10 +25,10 @@ AREA_HEIGHT_KM = 444.0  # 模拟区域高度，单位 km（纬度方向跨度）
 N_PARTICLES = 1000000  # 初始粒子数，表示潜在目标样本数量
 TARGET_SPEED_KM = 30.0  # 目标运动速度，单位 km/h
 UAV_SPEED_KM = 150.0  # 无人机巡航速度，单位 km/h
-UAV_SCAN_RADIUS_KM = 15.0  # 无人机传感器扫描半径，单位 km
+UAV_SCAN_RADIUS_KM = 20.0  # 无人机传感器扫描半径，单位 km
 DT = 0.01  # 仿真时间步长，单位小时
-MAX_STEPS = 1000  # 最大仿真步数
-STEPS_TO_UPDATE = 5  # 每隔多少步更新一次绘图（调整以平衡性能和实时性）
+MAX_STEPS = 4000  # 最大仿真步数
+STEPS_TO_UPDATE = 1  # 每隔多少步更新一次绘图（调整以平衡性能和实时性）
 
 # --- 定点缩放设置 ---
 # 用整数网格单位替代浮点坐标：1 km -> 1000 单位（1 单位=1 m）
@@ -33,14 +47,17 @@ particle_angles = np.random.rand(N_PARTICLES) * 2 * np.pi  # 每个粒子的运�
 # --- 初始化无人机 ---
 
 UAV_STEP_U = int(round(UAV_SPEED_KM * DT * SCALE))  # 无人机每步移动的距离（整数单位）
-uav_angle = 0  # 无人机当前移动方向角（弧度），初始向右（0度）
-uav_turning_angle = 0  # 无人机每步的转向角（弧度），初始为0，后续根据边界情况调整
+uav_angle = 0.5 * np.pi  # 无人机当前移动方向角（弧度），初始向右（0度）
+is_uav_turning = False  # 无人机是否正在转向
+is_uav_turning_clockwise = False  # 无人机转向方向（True -> 顺时针 || False -> 逆时针）
+uav_turning_angle_each = 0  # 无人机每步的转向角（弧度），初始为0，后续根据边界情况调整
+uav_turn_step_remain = 0  # 无人机当前转向还剩多少步，初始为0，后续根据边界情况调整
 
-uav_pos_u = np.array([0, 0], dtype=np.int64)  # 无人机从左下角出发，单位为缩放后的整数坐标
-uav_kpt_from_x_u = 0  # 无人机上次kpt的 x 坐标 (整数单位)
-uav_kpt_from_y_u = 0  # 无人机上次kpt的 y 坐标 (整数单位)
-uav_kpt__to__x_u = 0  # 无人机下次kpt的 x 坐标 (整数单位)
-uav_kpt__to__y_u = 0  # 无人机下次kpt的 y 坐标 (整数单位)
+uav_pos_u = np.array([UAV_SCAN_RADIUS_U, 0], dtype=np.int64)  # 无人机从左下角出发，单位为缩放后的整数坐标
+uav_kpt_from__x_u = 0  # 无人机上次kpt的 x 坐标 (整数单位)
+uav_kpt_from__y_u = 0  # 无人机上次kpt的 y 坐标 (整数单位)
+uav_kpt_to__x_u = 0  # 无人机下次kpt的 x 坐标 (整数单位)
+uav_kpt_to__y_u = 0  # 无人机下次kpt的 y 坐标 (整数单位)
 
 # --- 模拟循环变量 ---
 history_count = []  # 记录每一步剩余粒子数，用于最终绘图
@@ -48,12 +65,24 @@ time_elapsed = 0  # 累计仿真时间（小时）
 
 particle_step_u = int(round(TARGET_SPEED_KM * DT * SCALE))  # 目标每步移动的距离 (整数单位)
 
+# --- 绘制设置 ---
+GRID_SIZE_U = 5 * SCALE  # 调整网格大小以平衡性能和清晰度
+
 # ------------------------------------------移动控制相关函数------------------------------------------
 
 # --- 粒子位置更新函数 ---
 
 def update_particles(p, ang, step_u):
-    """按当前速度和方向更新粒子位置，并在边界处做反弹处理。"""
+    
+    """
+    按当前速度和方向更新粒子位置，并在边界处做反弹处理。
+    
+    :param p: 粒子位置数组 shape=(N,2)，每行是 [x, y]，整数类型
+    :param ang: 粒子运动方向角数组 shape=(N,)，单位为弧度
+    :param step_u: 每步移动的距离（整数单位）
+    :return: 更新后的粒子位置数组和方向角数组
+    """
+    
     dx = np.rint(step_u * np.cos(ang)).astype(np.int64)  # x 方向位移（按角度投影后取整）
     dy = np.rint(step_u * np.sin(ang)).astype(np.int64)  # y 方向位移（按角度投影后取整）
     p[:, 0] += dx  # 批量更新所有粒子的 x 坐标
@@ -65,8 +94,9 @@ def update_particles(p, ang, step_u):
     # 边界检查：超出上下边界时，方向角按 y 轴法线反射
     mask_y = (p[:, 1] < 0) | (p[:, 1] > AREA_HEIGHT_U)
 
-    ang[mask_x] = np.where(mask_x, (np.pi - ang[mask_x]) % (2 * np.pi), ang)
-    ang[mask_y] = np.where(mask_y, (-ang) % (2 * np.pi), ang)
+    # 边界反射：只更新越界粒子的角度
+    ang[mask_x] = (np.pi - ang[mask_x]) % (2 * np.pi)
+    ang[mask_y] = (-ang[mask_y]) % (2 * np.pi)
 
     # 坐标裁剪回合法区域，避免粒子停留在边界外
     p[:, 0] = np.clip(p[:, 0], 0, AREA_WIDTH_U )  # 裁剪 x 坐标到 [0, AREA_WIDTH_U]
@@ -85,19 +115,22 @@ def is_uav_right() -> bool:
 def is_uav_left() -> bool:
     return (uav_angle > 0.5 * np.pi) and (uav_angle < 1.5 * np.pi)
 
-def is_uav_at_top_edge() -> bool:
+def is_uav_outside_top_edge() -> bool:
     return (uav_pos_u[1]) >= AREA_HEIGHT_U
-def is_uav_at_bottom_edge() -> bool:
+def is_uav_outside_bottom_edge() -> bool:
     return (uav_pos_u[1]) <= 0
-def is_uav_at_right_edge() -> bool:
+def is_uav_outside_right_edge() -> bool:
     return (uav_pos_u[0]) >= AREA_WIDTH_U
-def is_uav_at_left_edge() -> bool:
+def is_uav_outside_left_edge() -> bool:
     return (uav_pos_u[0]) <= 0
 
 def is_uav_2_scan_radius_from_kpt() -> bool:
-    return (uav_pos_u[0] - uav_kpt_from_x_u)**2 + (uav_pos_u[1] - uav_kpt_from_y_u)**2 >= (2 * UAV_SCAN_RADIUS_U)**2 
+    return (uav_pos_u[0] - uav_kpt_from__x_u)**2 + (uav_pos_u[1] - uav_kpt_from__y_u)**2 >= (2 * UAV_SCAN_RADIUS_U)**2 
+
+
 
 def get_turn_angle(angle_from, angle_to, clockwise):
+    
     """
     计算给定方向下的旋转角度
     
@@ -106,6 +139,7 @@ def get_turn_angle(angle_from, angle_to, clockwise):
     :param clockwise: 是否为顺时针 (True -> 顺时针 || False  -> 逆时针)
     :return: 旋转角度。逆时针返回 (0, 2pi], 顺时针返回 [-2pi, 0)
     """
+    
     two_pi = 2 * math.pi
     
     # 计算逆时针方向的基础差值，并映射到 [0, 2pi)
@@ -124,61 +158,137 @@ def get_turn_angle(angle_from, angle_to, clockwise):
         # 如果 diff 为 0 且需要表示“转一圈”，可以根据需求改为 two_pi
         return diff
 
-# 无人机是否到达右上角/右下角并且用速度方向判定是否完成扫描的判定
+
+
+def uav_turn_start(start_point: np.ndarray, end_point: np.ndarray, start_angle: float, end_angle: float, is_clockwise: bool):
+    '''
+    无人机转向开始时的初始化:
+    1. 记录转向起点和终点的坐标（整数单位）
+    2. 计算总转向角度（根据当前角度、目标角度和转向方向）
+    3. 根据转向半径和总转向角度计算转向弧长，进而计算总转向步数
+    4. 计算每步的转向角度
+    5. 设置转向状态和转向方向
+    
+    :param start_point: 转向起点坐标 [x, y]，整数单位
+    :param end_point: 转向终点坐标 [x, y]，整数单位
+    :param start_angle: 转向起始角度（弧度）
+    :param end_angle: 转向目标角度（弧度）
+    :param is_clockwise: 转向方向（True -> 顺时针 || False -> 逆时针）
+    '''
+    global uav_turning_angle_each, is_uav_turning, is_uav_turning_clockwise, uav_kpt_from__x_u, uav_kpt_from__y_u, uav_kpt_to__x_u, uav_kpt_to__y_u, uav_turn_step_remain
+    
+    uav_kpt_from__x_u = start_point[0]  # 记录kpt的 x 坐标
+    uav_kpt_from__y_u = start_point[1]  # 记录kpt的 y 坐标
+    
+    uav_kpt_to__x_u = end_point[0]  # 记录kpt的 x 坐标
+    uav_kpt_to__y_u = end_point[1]  # 记录kpt的 y 坐标
+
+    total_angle = get_turn_angle(start_angle, end_angle, is_clockwise)
+
+    # 用弦长-圆心角关系计算半径，避免 cos/sin 接近 0 时数值爆炸
+    dx = float(uav_kpt_to__x_u - uav_kpt_from__x_u)
+    dy = float(uav_kpt_to__y_u - uav_kpt_from__y_u)
+    chord_u = math.hypot(dx, dy)  # 弦长(整数单位)
+    theta = abs(total_angle)  # 转向的总角度（弧度）
+
+    if theta < 1e-9 or chord_u < 1e-9:
+        uav_turn_step_remain = 0
+        uav_turning_angle_each = 0.0
+        is_uav_turning = False
+        is_uav_turning_clockwise = is_clockwise
+        return
+
+    den = 2.0 * math.sin(theta * 0.5)  # 弦长/半径
+    if abs(den) < 1e-9:
+        turn_radius_u = float(UAV_SCAN_RADIUS_U)
+    else:
+        turn_radius_u = chord_u / abs(den)
+    
+    # 弧长 = 角度(弧度) * 半径
+    arc_length_u = abs(total_angle) * turn_radius_u
+    
+    # 总步数 = 弧长 / 每步移动距离
+    uav_turn_step_remain = max(1, int(round(arc_length_u / UAV_STEP_U)))
+    
+    # 每步分摊的角度
+    uav_turning_angle_each = total_angle / uav_turn_step_remain
+    
+    is_uav_turning = True
+    is_uav_turning_clockwise = is_clockwise
+
+
+
 def is_uav_at_end_corner() -> bool:
+    '''
+    无人机是否到达右上角/右下角并且用速度方向判定是否完成扫描的判定:
+    1. 到达右上角并且向上方飞行
+    2. 到达右下角并且向下方飞行
+    '''
     ret = False
-    if(is_uav_at_top_edge() and (uav_pos_u[0] + UAV_SCAN_RADIUS_U) >= AREA_WIDTH_U and is_uav_up()):
+    if(is_uav_outside_top_edge() and (uav_pos_u[0] + UAV_SCAN_RADIUS_U) >= AREA_WIDTH_U and is_uav_up()):
         ret = True
-    if(is_uav_at_bottom_edge() and (uav_pos_u[0] + UAV_SCAN_RADIUS_U) >= AREA_WIDTH_U and is_uav_down()):
+    if(is_uav_outside_bottom_edge() and (uav_pos_u[0] + UAV_SCAN_RADIUS_U) >= AREA_WIDTH_U and is_uav_down()):
         ret = True
     
     return ret
 
-# uav是否完成扫描的判定
-def is_uav_complete_scan() -> bool:
-    return is_uav_at_end_corner()
 
-# 无人机移动逻辑
+
 def update_uav() -> bool:
-    global uav_pos_u, uav_angle, uav_kpt_from_x_u, uav_kpt_from_y_u, time_elapsed
+    '''
+    无人机移动逻辑
+    1. 更新无人机飞行状态（转向中则更新角度和剩余转向步数）
+    2. 更新无人机位置（无论直线还是曲线，每步移动 UAV_STEP_U）
+    3. 判定扫描完成（到达右上角/右下角并且用速度方向判定是否完成扫描）
+    4. 航路切换逻辑 (状态机)
+        A. 向上飞行到达顶点 -> 开始顺时针转 90 度向右
+        B. 向下飞行到达底点 -> 开始逆时针转 90 度向右
     
-    # 更新无人机方向
-    uav_angle += uav_turning_angle  # 这里的角度更新逻辑在后续的边界判断中进行调整
-    uav_angle = uav_angle % (2 * np.pi)  # 确保角度在 [0, 2π) 范围内
+    :return: 是否继续仿真（False -> 无人机完成扫描，True -> 继续仿真）
+    '''
+    global uav_pos_u, uav_angle, uav_turn_step_remain, uav_turning_angle_each, is_uav_turning, time_elapsed
+    
+    # --- 1. 更新无人机飞行状态 ---
+    if uav_turn_step_remain > 0:
+        # 转向中：更新角度
+        uav_angle += uav_turning_angle_each
+        uav_turn_step_remain -= 1
+        if uav_turn_step_remain == 0:
+            uav_turning_angle_each = 0
+            is_uav_turning = False
+    
+    # 保持角度在 [0, 2π) 范围内
+    uav_angle = uav_angle % (2 * np.pi)
 
-    # 更新无人机位置
-    uav_pos_u[0] += UAV_STEP_U * np.cos(uav_angle)
-    uav_pos_u[1] += UAV_STEP_U * np.sin(uav_angle)
+    # 更新位置 (无论直线还是曲线，每步移动 UAV_STEP_U)
+    uav_pos_u[0] += int(round(UAV_STEP_U * np.cos(uav_angle)))
+    uav_pos_u[1] += int(round(UAV_STEP_U * np.sin(uav_angle)))
 
-    # 边界判断:变向
-    # 到达右上角/右下角后终止
-    if (is_uav_complete_scan()):
-        print(f"无人机完成扫描！耗时: {time_elapsed:.2f} 小时")
+    # --- 2. 判定扫描完成 ---
+    if is_uav_at_end_corner():
+        print(f"UAV scan completed! Elapsed time: {time_elapsed:.2f} h")
         return False
 
-    # 向上到达顶边后向右转
-    if (is_uav_up() and is_uav_at_top_edge()):  
-        # uav_pos_u[1] = AREA_HEIGHT_U - UAV_SCAN_RADIUS_U  # 修正 y 坐标
-        uav_angle = 0  # 向右转
-        uav_kpt_from_x_u = uav_pos_u[0]  # 记录kpt的 x 坐标
-        uav_kpt_from_y_u = uav_pos_u[1]  # 记录kpt的 y 坐标
-        
-    # 向下到达底边后向右转
-    if(is_uav_down() and is_uav_at_bottom_edge()):  
-        # uav_pos_u[1] = UAV_SCAN_RADIUS_U  # 修正 y 坐标
-        uav_angle = 0  # 向右转
-        uav_kpt_from_x_u = uav_pos_u[0]  # 记录kpt的 x 坐标
-        uav_kpt_from_y_u = uav_pos_u[1]  # 记录kpt的 y 坐标
-    
-    # 即将向右到距离kpt两个扫描半径处后向上/向下转
-    if (is_uav_right() and is_uav_2_scan_radius_from_kpt()):  
-        if(uav_pos_u[1] < AREA_HEIGHT_U / 2):  # 如果在区域下半部分，向上转
-            uav_angle = 0.5 * np.pi
-        else:  # 如果在区域上半部分，向下转
-            uav_angle = 1.5 * np.pi
-        uav_kpt_from_x_u = uav_pos_u[0]  # 记录kpt的 x 坐标
-        uav_kpt_from_y_u = uav_pos_u[1]  # 记录kpt的 y 坐标
+    # --- 3. 航路切换逻辑 (状态机) ---
+    if is_uav_turning == False:
+        # A. 向上飞行到达顶点 -> 开始顺时针调头扫描下一条条带
+        if is_uav_up() and is_uav_outside_top_edge():
+            # 目标位置 ([x+r], [y])，目标航向 1.5π (向下)
+            uav_turn_start(uav_pos_u.copy(), 
+                           np.array([uav_pos_u[0] + 2 * UAV_SCAN_RADIUS_U, uav_pos_u[1]]),
+                           uav_angle,
+                           1.5 * np.pi,  # 目标航向 1.5π (向下)
+                           is_clockwise=True)
 
+        # B. 向下飞行到达底点 -> 开始逆时针调头扫描下一条条带
+        elif is_uav_down() and is_uav_outside_bottom_edge():
+            # 目标位置 ([x+r], [y])，目标航向 0.5π (向上)
+            uav_turn_start(uav_pos_u.copy(), 
+                           np.array([uav_pos_u[0] + 2 * UAV_SCAN_RADIUS_U, uav_pos_u[1]]),
+                           uav_angle,
+                           0.5 * np.pi,  # 目标航向 0.5π (向上)
+                           is_clockwise=False)
+            
     return True
     
 # ------------------------------------------
@@ -192,29 +302,57 @@ plt.ion()  # 开启交互模式
 fig, window = plt.subplots(figsize=(8, 6))
 
 # 初始化热力图网格
-grid_size = 1 * SCALE  # 调整网格大小以平衡性能和清晰度
-x_bins = np.arange(0, AREA_WIDTH_U + grid_size, grid_size)
-y_bins = np.arange(0, AREA_HEIGHT_U + grid_size, grid_size)
+x_bins = np.arange(0, AREA_WIDTH_U + GRID_SIZE_U, GRID_SIZE_U)
+y_bins = np.arange(0, AREA_HEIGHT_U + GRID_SIZE_U, GRID_SIZE_U)
+
+# 初始密度矩阵（用初始粒子位置）
+initial_density_matrix, _, _ = np.histogram2d(
+    particle_locations[:, 1],
+    particle_locations[:, 0],
+    bins=[y_bins, x_bins]
+)
+fixed_vmax = max(1, float(np.max(initial_density_matrix)))
 
 # 创建初始空图层
-im = window.imshow(np.zeros((len(y_bins)-1, len(x_bins)-1)),    # 注意这里的维度是 (y_bins-1, x_bins-1)，因为 histogram2d 的输出是这样的
+im = window.imshow(
+               np.zeros((len(y_bins)-1, len(x_bins)-1)),    # 注意这里的维度是 (y_bins-1, x_bins-1)，因为 histogram2d 的输出是这样的
+            
                extent=(0, AREA_WIDTH_KM, 0, AREA_HEIGHT_KM),    # 设置坐标轴范围为实际的 km 单位
                origin='lower',                                  # 设置 origin='lower' 左下角为原点
-               cmap='YlOrRd',                                   # 使用 YlOrRd 颜色映射
-            #    cmap='coolwarm',                                 # 使用 coolwarm 颜色映射
+            #    cmap='YlOrRd',                                   # 使用 YlOrRd 颜色映射
+                cmap='coolwarm',                                 # 使用 coolwarm 颜色映射
             #    cmap='magma',                                    # 使用 magma 颜色映射
             #    cmap='inferno',                                  # 使用 inferno 颜色映射
             #    cmap='viridis',                                  # 使用 viridis 颜色映射
             #    cmap='hot',                                      # 使用 hot 颜色映射
-               animated=True                                    # 设置为动画模式以提高更新效率
+               animated=True ,                                   # 设置为动画模式以提高更新效率
+               vmin = 0 ,
+               vmax = fixed_vmax
             )    
-cbar = fig.colorbar(im, ax=window, label='粒子密度 (粒子数/km²) - Particle Density (particles/km²)')
-# uav_dot, = window.plot([], [], 'ro', markersize=3, label='UAV') # 绘制无人机位置点
-uav_dot, = window.plot([], [], 'ro', markersize=3) # 绘制无人机位置点
-window.set_title('实时粒子密度 (Real-time Particle Density)')
+cbar = fig.colorbar(im, ax=window, label='Particle Density (particles/km²)')
+uav_dot, = window.plot([], [], 'ro', markersize=3 , label='UAV') # 绘制无人机位置点
+window.set_title('Real-time Particle Density')
 window.set_xlabel('X (km)')
 window.set_ylabel('Y (km)')
-window.legend()
+window.legend() # 显示图例
+
+# 实时信息面板：显示无人机坐标、角度和剩余粒子比例
+status_text = window.text(
+    -0.7,
+    0.98,
+    '',
+    transform=window.transAxes,
+    va='top',
+    ha='left',
+    fontsize=10,
+    bbox=dict(boxstyle='round', facecolor='white', alpha=0.75, edgecolor='gray')
+)
+status_text.set_text(
+    f"UAV: ({uav_pos_u[0] / SCALE:.2f}, {uav_pos_u[1] / SCALE:.2f}) km\n"
+    f"Angle: {(uav_angle * 180.0 / np.pi) % 360.0:.1f} deg\n"
+    f"Time: {time_elapsed:.2f} h\n"
+    f"Particles: {len(particle_locations)}/{N_PARTICLES} ({len(particle_locations) / N_PARTICLES * 100:.2f}%)"
+)
 
 def get_counts_in_grids(p_locs):
     """计算当前所有格子的粒子数量矩阵"""
@@ -231,20 +369,20 @@ def get_counts_in_grids(p_locs):
 # ------------------------------------------
 
 # --- 5. 模拟循环 ---
-print("开始搜索模拟...")
+print("Starting search simulation...")
 for step in range(MAX_STEPS):
     # A. 目标移动
     particle_locations, particle_angles = update_particles(particle_locations, particle_angles, particle_step_u)
 
     # B. 无人机移动
+    if update_uav() == False:
+        break
     
-
-
-    # C. 判定捕获
-    delta = particle_locations - uav_pos_u
-    keep_mask = np.sum(delta**2, axis=1) > (UAV_SCAN_RADIUS_U**2)
-    particle_locations = particle_locations[keep_mask]
-    particle_angles = particle_angles[keep_mask]
+    # C. 无人机扫描并剔除被扫描到的粒子
+    delta = particle_locations - uav_pos_u  # 计算粒子位置与无人机位置的差值向量
+    keep_mask = np.sum(delta**2, axis=1) > (UAV_SCAN_RADIUS_U**2)   # 保留扫描半径外的粒子，剔除扫描半径内的粒子
+    particle_locations = particle_locations[keep_mask]  # 更新粒子位置数组，保留未被扫描到的粒子
+    particle_angles = particle_angles[keep_mask]    # 同步更新粒子角度数组，保持与位置数组对应
     
     history_count.append(len(particle_locations))  # 记录当前剩余粒子数
     time_elapsed += DT  # 更新时间累计
@@ -253,17 +391,31 @@ for step in range(MAX_STEPS):
     if step % STEPS_TO_UPDATE == 0: 
         density_matrix = get_counts_in_grids(particle_locations)
         im.set_data(density_matrix)
-        im.set_clim(vmin=0, vmax=np.max(density_matrix) if len(particle_locations)>0 else 1)
         
         # 更新无人机位置标记
         uav_dot.set_data([uav_pos_u[0]/SCALE], [uav_pos_u[1]/SCALE])
+
+        # 更新状态文本
+        uav_x_km = uav_pos_u[0] / SCALE
+        uav_y_km = uav_pos_u[1] / SCALE
+        uav_angle_deg = (uav_angle * 180.0 / np.pi) % 360.0
+        remaining_particles = len(particle_locations)
+        remaining_ratio = (remaining_particles / N_PARTICLES) * 100.0
+        status_text.set_text(
+            f"UAV: ({uav_x_km:.2f}, {uav_y_km:.2f}) km\n"
+            f"Angle: {uav_angle_deg:.1f} deg\n"
+            f"Time: {time_elapsed:.2f} h\n"
+            f"Particles: {remaining_particles}/{N_PARTICLES} ({remaining_ratio:.2f}%)"
+        )
         
         plt.draw()
         plt.pause(0.001) # 暂停微小时间以刷新画布
 
     # 终止条件
-    if is_uav_complete_scan() or len(particle_locations) == 0:
+    if is_uav_at_end_corner() or len(particle_locations) == 0:
         break
+
+
 
 plt.ioff() # 关闭交互模式
 plt.show() # 保持最后结果显示
