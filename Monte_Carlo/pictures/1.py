@@ -65,7 +65,7 @@ def draw():
     ax.text(x_br + 10, y_br + 10, "P2(306,444)", ha='left', va='top', fontdict=f_dict)
     
     # Base physically offset from marker
-    ax.text(x_base, y_base - 30, "            Base (Wenzhou)", color=STYLE["base_color"], 
+    ax.text(x_base + 180, y_base - 30, "Wenzhou Longwan Airport", color=STYLE["base_color"], 
             ha='center', va='bottom', fontdict=f_dict_b)
 
     # 4. Connecting line from Base to Area (Ferry Path Schematic)
