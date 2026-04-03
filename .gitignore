@@ -5,4 +5,8 @@ build
 uv.lock
 /Monte_Carlo/results/*
 *.parquet
+*.pyc
+*.cpython-*.pyc
 /Monte_Carlo/__pycache__/*
+/Monte_Carlo/core/__pycache__/*
+/Monte_Carlo/utils/__pycache__/*
