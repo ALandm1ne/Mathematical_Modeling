@@ -1,7 +1,17 @@
+"""CUDA 可用性与矩阵乘法吞吐测试脚本。"""
+
 import torch
 import time
 
+
 def test_cuda_power():
+    """
+    执行一次简化的 GPU 健康检查与算力压测。
+
+    输出内容：
+    1. CUDA 可用性与设备信息
+    2. 预热后矩阵乘法平均耗时
+    """
     print("-" * 50)
     # 1. 基础硬件检查
     if not torch.cuda.is_available():
@@ -18,7 +28,7 @@ def test_cuda_power():
     print(f"🛠️ CUDA 编译版本: {torch.version.cuda}")
     print("-" * 50)
 
-    # 2. 算力压测：创建一个 5000x5000 的大矩阵（模拟大规模蒙特卡洛计算）
+    # 2. 算力压测：创建一个 5000x5000 的大矩阵（模拟高并发线性代数计算）
     size = 5000
     print(f"🚀 正在进行 {size}x{size} 矩阵运算测试...")
     
@@ -28,7 +38,7 @@ def test_cuda_power():
     _ = torch.matmul(a, b)
     torch.cuda.synchronize()
 
-    # 正式测速
+    # 正式测速（多次重复后取平均，减小单次波动影响）
     start_time = time.time()
     for _ in range(100):
       c = torch.matmul(a, b)

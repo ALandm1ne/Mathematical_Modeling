@@ -3,3 +3,5 @@ build
 *.txt
 *.csv
 uv.lock
+/Monte_Carlo/results/*
+*.parquet
