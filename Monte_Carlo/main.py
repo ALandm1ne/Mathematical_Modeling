@@ -12,40 +12,28 @@
 
 import math
 import time
+import csv
+import os
+from datetime import datetime
 
 import matplotlib
+import matplotlib.animation as animation
 import numpy as np
 import torch
-
-# 实时可视化开关（直接在代码里改）：
-# True  -> 开启实时窗口
-# False -> 关闭实时窗口（适合 SSH/无图形环境）
-REALTIME_VISUALIZATION = False
-
-# 根据开关选择后端：关闭实时可视化时使用无界面 Agg 后端
-matplotlib.use('QtAgg' if REALTIME_VISUALIZATION else 'Agg')
-import matplotlib.pyplot as plt
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 # ------------------------------------------全局变量------------------------------------------
 
 # --- 参数设置 ---
 AREA_WIDTH_KM = 306.0  # 模拟区域宽度，单位 km（经度方向跨度）
 AREA_HEIGHT_KM = 444.0  # 模拟区域高度，单位 km（纬度方向跨度）
-N_PARTICLES = 1000000  # 初始粒子数，表示潜在目标样本数量
+N_PARTICLES = 10000000  # 初始粒子数，表示潜在目标样本数量
 TARGET_SPEED_KM = 30.0  # 目标运动速度，单位 km/h
 UAV_SPEED_KM = 150.0  # 无人机巡航速度，单位 km/h
 UAV_SCAN_RADIUS_KM = 20.0  # 无人机传感器扫描半径，单位 km
 DT = 0.01  # 仿真时间步长，单位小时
 MAX_STEPS = 4000  # 最大仿真步数
-STEPS_TO_UPDATE = 1  # 每隔多少步更新一次绘图（调整以平衡性能和实时性）
-
-# --- 设备设置（仅支持 CUDA） ---
-if not torch.cuda.is_available():
-    raise RuntimeError('CUDA is required but not available.')
-
-DEVICE = torch.device('cuda')
-GPU_NAME = torch.cuda.get_device_name(0)
-print(f'Using CUDA device: {GPU_NAME}')
 
 # --- 定点缩放设置 ---
 # 用整数网格单位替代浮点坐标：1 km -> 1000 单位（1 单位=1 m）
@@ -63,10 +51,63 @@ particle_step_u = int(round(TARGET_SPEED_KM * DT * SCALE))  # 目标粒子每步
 TWO_PI = 2.0 * math.pi
 PI = math.pi
 
-# --- 绘制设置 ---
+# --------- 绘制设置 ---------
+
+# --- 设备设置（仅支持 CUDA） ---
+if not torch.cuda.is_available():
+    raise RuntimeError('CUDA is required but not available.')
+
+DEVICE = torch.device('cuda')
+GPU_NAME = torch.cuda.get_device_name(0)
+print(f'Using CUDA device: {GPU_NAME}')
+
+STEPS_TO_UPDATE = 30  # 每隔多少步更新一次绘图（调整以平衡性能和实时性）
 GRID_SIZE_U = 2 * SCALE  # 热力图网格大小（2km x 2km）
 N_X_BINS = AREA_WIDTH_U // GRID_SIZE_U + 1  # x 方向网格数
 N_Y_BINS = AREA_HEIGHT_U // GRID_SIZE_U + 1  # y 方向网格数
+
+# --- 调试文本位置（相对于 figure 坐标系，0-1 之间） ---
+DEBUG_TEXT_X = 0.02  # 文本左侧距离 figure 左边界
+DEBUG_TEXT_Y = 0.075  # 文本顶部距离 figure 下边界
+
+# 实时可视化开关：
+# True  -> 开启实时窗口
+# False -> 关闭实时窗口（适合 SSH/无图形环境）
+REALTIME_VISUALIZATION = True
+
+# 仿真视频导出开关（推荐在无界面模式下使用）
+EXPORT_SIMULATION_VIDEO = False
+VIDEO_OUTPUT_FILENAME = 'simulation.mp4'
+VIDEO_FPS = 20
+VIDEO_DPI = 120
+
+# 显示窗口尺寸参数（单位：英寸）
+MAIN_FIG_SIZE = (12, 12)      # 主仿真窗口尺寸
+SUMMARY_FIG_SIZE = (10, 5)   # 收敛曲线窗口尺寸
+
+# UAV 轨迹导出设置
+EXPORT_UAV_TRAJECTORY = True
+# 支持: 'csv' / 'parquet' / 'both'
+UAV_TRAJECTORY_EXPORT_FORMAT = 'both'
+UAV_TRAJECTORY_OUTPUT_BASENAME = 'uav_trajectory'
+UAV_TRAJECTORY_PARQUET_COMPRESSION = 'zstd'  # 可选: 'zstd'/'snappy'/'gzip'/None
+# True: 导出扩展字段（angle_deg/is_turning/remaining_particles）
+# False: 仅导出基础字段（step/time_h/x_km/y_km）
+UAV_TRAJECTORY_INCLUDE_EXTENDED = True
+
+ENABLE_VISUAL_OUTPUT = REALTIME_VISUALIZATION or EXPORT_SIMULATION_VIDEO
+
+# 输出路径统一管理：所有产物写入 main.py 同目录/results/<timestamp>/
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+RESULTS_ROOT_DIR = os.path.join(SCRIPT_DIR, 'results')
+RUN_TIMESTAMP = datetime.now().strftime('%Y%m%d_%H%M%S')
+RUN_RESULTS_DIR = os.path.join(RESULTS_ROOT_DIR, RUN_TIMESTAMP)
+os.makedirs(RUN_RESULTS_DIR, exist_ok=True)
+print(f'Results directory: {RUN_RESULTS_DIR}')
+
+# 根据开关选择后端：关闭实时可视化时使用无界面 Agg 后端
+matplotlib.use('QtAgg' if REALTIME_VISUALIZATION else 'Agg')
+import matplotlib.pyplot as plt
 
 # ------------------------------------------初始化------------------------------------------
 
@@ -132,6 +173,117 @@ time_elapsed = 0.0  # 累计仿真时间（小时）
 uav_traj_x_km = [uav_pos_u[0] / SCALE]  # 无人机轨迹 x（km）
 uav_traj_y_km = [uav_pos_u[1] / SCALE]  # 无人机轨迹 y（km）
 
+# 每步真实轨迹记录（与可视化刷新频率解耦）
+uav_step_trace = {
+    'step': [],
+    'time_h': [],
+    'x_km': [],
+    'y_km': [],
+    'angle_deg': [],
+    'is_turning': [],
+    'remaining_particles': [],
+}
+sim_step_counter = 0
+
+
+def record_uav_step_trace(step: int, remaining_particles: int):
+    """
+    记录无人机单步真实轨迹点。
+
+    说明：
+    1. 该记录与可视化刷新频率无关，每个仿真步都会追加
+    2. 同时维护用于绘图的轨迹列表，确保几何轨迹来自真实步进
+    """
+    uav_x_km = uav_pos_u[0] / SCALE
+    uav_y_km = uav_pos_u[1] / SCALE
+    uav_angle_deg = (uav_angle * 180.0 / np.pi) % 360.0
+
+    uav_step_trace['step'].append(step)
+    uav_step_trace['time_h'].append(time_elapsed)
+    uav_step_trace['x_km'].append(uav_x_km)
+    uav_step_trace['y_km'].append(uav_y_km)
+    uav_step_trace['angle_deg'].append(uav_angle_deg)
+    uav_step_trace['is_turning'].append(bool(is_uav_turning))
+    uav_step_trace['remaining_particles'].append(int(remaining_particles))
+
+    # 轨迹绘图数据按“每步真实点”累计
+    uav_traj_x_km.append(uav_x_km)
+    uav_traj_y_km.append(uav_y_km)
+
+
+def _get_trajectory_fieldnames(include_extended: bool):
+    base_fields = ['step', 'time_h', 'x_km', 'y_km']
+    if not include_extended:
+        return base_fields
+    return base_fields + ['angle_deg', 'is_turning', 'remaining_particles']
+
+
+def export_uav_trace(base_name: str, export_format: str, include_extended: bool):
+    """
+    导出 UAV 真实轨迹。
+
+    export_format 支持：
+    - 'csv': 仅导出 CSV
+    - 'parquet': 仅导出 Parquet
+    - 'both': 同时导出 Parquet 和 CSV
+    """
+    if len(uav_step_trace['step']) == 0:
+        print('UAV trajectory export skipped: no recorded steps.')
+        return
+
+    fieldnames = _get_trajectory_fieldnames(include_extended)
+
+    def write_csv(path: str):
+        with open(path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            n_rows = len(uav_step_trace['step'])
+            for i in range(n_rows):
+                row = {
+                    'step': uav_step_trace['step'][i],
+                    'time_h': uav_step_trace['time_h'][i],
+                    'x_km': uav_step_trace['x_km'][i],
+                    'y_km': uav_step_trace['y_km'][i],
+                    'angle_deg': uav_step_trace['angle_deg'][i],
+                    'is_turning': uav_step_trace['is_turning'][i],
+                    'remaining_particles': uav_step_trace['remaining_particles'][i],
+                }
+                writer.writerow({k: row[k] for k in fieldnames})
+
+        file_size = os.path.getsize(path)
+        print(f'UAV trajectory exported: {path} ({n_rows} rows, {file_size} bytes)')
+
+    def write_parquet(path: str):
+        table_data = {k: uav_step_trace[k] for k in fieldnames}
+        table = pa.table(table_data)
+        pq.write_table(table, path, compression=UAV_TRAJECTORY_PARQUET_COMPRESSION)
+
+        n_rows = len(uav_step_trace['step'])
+        file_size = os.path.getsize(path)
+        print(f'UAV trajectory exported: {path} ({n_rows} rows, {file_size} bytes)')
+
+    fmt = export_format.strip().lower()
+    csv_path = os.path.join(RUN_RESULTS_DIR, f'{base_name}.csv')
+    parquet_path = os.path.join(RUN_RESULTS_DIR, f'{base_name}.parquet')
+
+    if fmt == 'csv':
+        write_csv(csv_path)
+        return
+
+    if fmt == 'parquet':
+        write_parquet(parquet_path)
+        return
+
+    if fmt == 'both':
+        write_parquet(parquet_path)
+        write_csv(csv_path)
+        return
+
+    raise ValueError(
+        f'Unknown UAV_TRAJECTORY_EXPORT_FORMAT={export_format}. '
+        "Use one of: 'csv', 'parquet', 'both'."
+    )
+
 # ------------------------------------------移动控制相关函数------------------------------------------
 
 def update_particles(p_locs, p_angles, active_idx, step_u):
@@ -182,24 +334,31 @@ def update_particles(p_locs, p_angles, active_idx, step_u):
 
 
 def is_uav_up() -> bool:
+    """当前航向是否属于“向上扫描”半平面。"""
     return (uav_angle > 0) and (uav_angle < np.pi)
 
 
 def is_uav_down() -> bool:
+    """当前航向是否属于“向下扫描”半平面。"""
     return (uav_angle > np.pi) and (uav_angle < 2 * np.pi)
 
 
 def is_uav_outside_top_edge() -> bool:
+    """是否触及/越过上边界。"""
     return uav_pos_u[1] >= AREA_HEIGHT_U
 
 
 def is_uav_outside_bottom_edge() -> bool:
+    """是否触及/越过下边界。"""
     return uav_pos_u[1] <= 0
 
 
 def get_turn_angle(angle_from, angle_to, clockwise):
     """
     计算在指定旋转方向下，从 angle_from 到 angle_to 的转向角。
+
+    注意：这里返回的是“带符号的最短可行转角（受 clockwise 约束）”。
+    例如目标角相同但 clockwise=True 时，返回 0；否则不会强制绕满一圈。
 
     :return:
         逆时针：返回 [0, 2π)
@@ -238,6 +397,7 @@ def uav_turn_start(start_point: np.ndarray, end_point: np.ndarray, start_angle: 
     chord_u = math.hypot(dx, dy)
     theta = abs(total_angle)
 
+    # 退化情形：几乎无需转弯，直接退出转向状态
     if theta < 1e-9 or chord_u < 1e-9:
         uav_turn_step_remain = 0
         uav_turning_angle_each = 0.0
@@ -246,6 +406,7 @@ def uav_turn_start(start_point: np.ndarray, end_point: np.ndarray, start_angle: 
         return
 
     den = 2.0 * math.sin(theta * 0.5)  # 弦长公式中的分母项
+    # 小角度时 sin(theta/2) 可能接近 0，此处提供稳定兜底半径
     if abs(den) < 1e-9:
         turn_radius_u = float(UAV_SCAN_RADIUS_U)
     else:
@@ -286,6 +447,7 @@ def update_uav() -> bool:
     """
     global uav_pos_u, uav_angle, uav_turn_step_remain, uav_turning_angle_each, is_uav_turning
 
+    # 1) 若处于转向阶段：每步累加固定转角，直到步数耗尽
     if uav_turn_step_remain > 0:
         uav_angle += uav_turning_angle_each
         uav_turn_step_remain -= 1
@@ -293,8 +455,10 @@ def update_uav() -> bool:
             uav_turning_angle_each = 0.0
             is_uav_turning = False
 
+    # 2) 角度归一化到 [0, 2π)，避免数值无限增长
     uav_angle = uav_angle % TWO_PI
 
+    # 3) 按当前航向推进一个离散时间步
     uav_pos_u[0] += int(round(UAV_STEP_U * np.cos(uav_angle)))
     uav_pos_u[1] += int(round(UAV_STEP_U * np.sin(uav_angle)))
 
@@ -302,7 +466,7 @@ def update_uav() -> bool:
         print(f'UAV scan completed! Elapsed time: {time_elapsed:.2f} h')
         return False
 
-    # 航路切换逻辑（条带扫描状态机）
+    # 4) 航路切换逻辑（条带扫描状态机）
     if not is_uav_turning:
         # A. 向上飞行到达顶边 -> 顺时针掉头到下一条条带
         if is_uav_up() and is_uav_outside_top_edge():
@@ -390,38 +554,52 @@ def run_one_step():
     C. 扫描剔除（GPU）
     D. 记录剩余粒子与时间
     """
-    global time_elapsed
+    global time_elapsed, sim_step_counter
 
-    active_idx = torch.nonzero(particle_active_mask, as_tuple=True)[0]  # 当前活跃粒子索引
+    # 当前仍“可能为目标”的粒子索引（True 表示尚未被扫描覆盖）
+    active_idx = torch.nonzero(particle_active_mask, as_tuple=True)[0]
     
     if active_idx.numel() == 0: # 没有活跃粒子了，提前结束仿真
         return False
 
+    # A) 粒子随机机动一步
     update_particles(particle_locations, particle_angles, active_idx, particle_step_u)
 
+    # B) 无人机条带扫描推进一步
     if not update_uav():
         return False
 
+    # C) 将当前扫描圆覆盖到的粒子标记为失活
     remove_scanned_particles(particle_locations, particle_active_mask, active_idx)
 
-    remaining_particles = int(torch.count_nonzero(particle_active_mask).item())  # 活跃粒子总数
+    # D) 统计剩余不确定粒子并推进仿真时钟
+    remaining_particles = int(torch.count_nonzero(particle_active_mask).item())
     history_count.append(remaining_particles)
     time_elapsed += DT
+    sim_step_counter += 1
+
+    # 每步追加真实轨迹记录（与可视化解耦）
+    record_uav_step_trace(sim_step_counter, remaining_particles)
 
     return (not is_uav_at_end_corner()) and (remaining_particles > 0)
 
 
 # ------------------------------------------可视化------------------------------------------
 
-if REALTIME_VISUALIZATION:
-    # 开启交互模式，便于实时刷新窗口
-    plt.ion()
-    window = plt.subplots(figsize=(8, 6))[1]
+if ENABLE_VISUAL_OUTPUT:
+    # 实时模式下开启交互刷新；仅导出视频时不弹窗
+    if REALTIME_VISUALIZATION:
+        plt.ion()
+
+    fig, window = plt.subplots(figsize=MAIN_FIG_SIZE)
+    # 为左侧调试面板预留空白区域，避免与主图重叠
+    fig.subplots_adjust(left=0.24)
 
     # 初始密度用来固定 colorbar 范围，避免刷新时色标跳动
     initial_density_matrix = get_counts_in_grids(particle_locations, particle_active_mask)
     fixed_vmax = max(1.0, float(np.max(initial_density_matrix)))
 
+    # 热力图：显示每个网格中的活跃粒子数（概率密度代理）
     im = window.imshow(
         np.zeros((N_Y_BINS, N_X_BINS), dtype=np.float32),
         extent=(0, AREA_WIDTH_KM, 0, AREA_HEIGHT_KM),
@@ -439,26 +617,47 @@ if REALTIME_VISUALIZATION:
     window.set_ylabel('Y (km)')
     window.legend()
 
-    status_text = window.text(
-        -0.7,
-        0.98,
+    # 调试信息放在 figure 坐标系下的左侧空白区（图外），避免覆盖热力图
+    status_text = fig.text(
+        DEBUG_TEXT_X,
+        DEBUG_TEXT_Y,
         '',
-        transform=window.transAxes,
+        transform=fig.transFigure,
         va='top',
         ha='left',
         fontsize=10,
         bbox=dict(boxstyle='round', facecolor='white', alpha=0.75, edgecolor='gray'),
     )
+    video_writer = None
+    video_output_path = None
+    if EXPORT_SIMULATION_VIDEO:
+        video_basename = os.path.basename(VIDEO_OUTPUT_FILENAME)
+        # 优先使用 ffmpeg 导出 mp4；不可用时回退到 gif
+        if animation.writers.is_available('ffmpeg'):
+            video_output_path = os.path.join(RUN_RESULTS_DIR, video_basename)
+            video_writer = animation.FFMpegWriter(fps=VIDEO_FPS, bitrate=2400)
+        else:
+            video_output_path = os.path.join(
+                RUN_RESULTS_DIR,
+                video_basename.rsplit('.', 1)[0] + '.gif',
+            )
+            video_writer = animation.PillowWriter(fps=max(1, min(VIDEO_FPS, 20)))
+
+        video_writer.setup(fig, video_output_path, dpi=VIDEO_DPI)
+        print(f'Video export enabled: {video_output_path}')
 else:
+    fig = None
     window = None
     im = None
     status_text = None
+    video_writer = None
+    video_output_path = None
     print('Realtime visualization disabled.')
 
 
 def update_status_panel(remaining_particles):
     """刷新左侧状态面板文本。"""
-    if not REALTIME_VISUALIZATION:
+    if not ENABLE_VISUAL_OUTPUT:
         return
 
     assert status_text is not None
@@ -466,6 +665,7 @@ def update_status_panel(remaining_particles):
     uav_x_km = uav_pos_u[0] / SCALE
     uav_y_km = uav_pos_u[1] / SCALE
     uav_angle_deg = (uav_angle * 180.0 / np.pi) % 360.0
+    # 剩余比例可理解为“当前仍未被排除的目标概率质量”
     remaining_ratio = (remaining_particles / N_PARTICLES) * 100.0
     status_text.set_text(
         f'UAV: ({uav_x_km:.2f}, {uav_y_km:.2f}) km\n'
@@ -477,10 +677,11 @@ def update_status_panel(remaining_particles):
 
 def update_visualization(remaining_particles):
     """更新热力图、无人机位置、轨迹和状态文本。"""
-    if not REALTIME_VISUALIZATION:
+    if not ENABLE_VISUAL_OUTPUT:
         return
 
     assert im is not None
+    assert fig is not None
     assert uav_dot is not None
     assert uav_path is not None
 
@@ -488,15 +689,20 @@ def update_visualization(remaining_particles):
     density_matrix = get_counts_in_grids(particle_locations, particle_active_mask)
     im.set_data(density_matrix)
 
+    # 无人机当前位置（红点）
     uav_dot.set_data([uav_pos_u[0] / SCALE], [uav_pos_u[1] / SCALE])
 
-    uav_traj_x_km.append(uav_pos_u[0] / SCALE)
-    uav_traj_y_km.append(uav_pos_u[1] / SCALE)
+    # 轨迹来源于每步真实记录，这里仅负责显示
     uav_path.set_data(uav_traj_x_km, uav_traj_y_km)
 
     update_status_panel(remaining_particles)
-    plt.draw()
-    plt.pause(0.001)
+    fig.canvas.draw()
+
+    if REALTIME_VISUALIZATION:
+        plt.pause(0.001)
+
+    if video_writer is not None:
+        video_writer.grab_frame()
 
 
 # ------------------------------------------模拟循环------------------------------------------
@@ -505,11 +711,14 @@ print('Starting CUDA search simulation...')
 sim_start_time = time.perf_counter()
 
 for step in range(MAX_STEPS):
+    # run_one_step 返回 False 的两类情况：
+    # 1) 所有粒子已失活（搜索完成）
+    # 2) 无人机完成整块条带覆盖（到达终止角）
     if not run_one_step():
         break
 
     # 间隔绘图，避免每步都进行昂贵的数据回传与渲染
-    if REALTIME_VISUALIZATION and step % STEPS_TO_UPDATE == 0:
+    if ENABLE_VISUAL_OUTPUT and step % STEPS_TO_UPDATE == 0:
         remaining_particles = history_count[-1]
         update_visualization(remaining_particles)
 
@@ -517,11 +726,24 @@ torch.cuda.synchronize()
 sim_cost = time.perf_counter() - sim_start_time
 print(f'Simulation wall time: {sim_cost:.2f}s')
 
+if EXPORT_UAV_TRAJECTORY:
+    export_uav_trace(
+        base_name=UAV_TRAJECTORY_OUTPUT_BASENAME,
+        export_format=UAV_TRAJECTORY_EXPORT_FORMAT,
+        include_extended=UAV_TRAJECTORY_INCLUDE_EXTENDED,
+    )
+
+if video_writer is not None:
+    video_writer.finish()
+    print(f'Simulation video exported: {video_output_path}')
+
 if REALTIME_VISUALIZATION:
     plt.ioff()
     plt.show()
 
-plt.figure(figsize=(10, 5))
+# 收敛曲线：剩余粒子数随时间步变化
+# 若曲线快速下降，说明扫描路径覆盖效率较高。
+plt.figure(figsize=SUMMARY_FIG_SIZE)
 plt.plot(history_count)
 plt.title('Remaining Potential Target Particles Over Time')
 plt.xlabel('Time Steps')
@@ -531,6 +753,6 @@ plt.grid(True)
 if REALTIME_VISUALIZATION:
     plt.show()
 else:
-    out_file = 'remaining_particles.png'
+    out_file = os.path.join(RUN_RESULTS_DIR, 'remaining_particles.png')
     plt.savefig(out_file, dpi=150, bbox_inches='tight')
     print(f'Headless mode: saved summary figure to {out_file}')
