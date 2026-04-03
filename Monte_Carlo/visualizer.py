@@ -20,8 +20,8 @@ class SimVisualizer:
         self.window = None
         self.im = None
         self.status_text = None
-        self.uav_dot = None
-        self.uav_path = None
+        self.uav_dots = []
+        self.uav_paths = []
         self.video_writer = None
         self.video_output_path = None
         self.effective_video_dpi = self.cfg.video.dpi
@@ -63,12 +63,19 @@ class SimVisualizer:
             vmax=fixed_vmax,
         )
         self.window.figure.colorbar(self.im, ax=self.window, label="Particle Density (particles/grid)")
-        (self.uav_dot,) = self.window.plot([], [], "ro", markersize=3, label="UAV")
-        (self.uav_path,) = self.window.plot([], [], color="cyan", linewidth=1.2, alpha=0.9, label="UAV Path")
+        cmap = self.plt.cm.get_cmap("tab10", max(1, self.cfg.fleet.uav_count))
+        for i in range(self.cfg.fleet.uav_count):
+            color = cmap(i)
+            (dot,) = self.window.plot([], [], marker="o", markersize=3, color=color, linestyle="None", label=f"UAV#{i}")
+            (path,) = self.window.plot([], [], color=color, linewidth=1.2, alpha=0.9, label=f"Path#{i}")
+            self.uav_dots.append(dot)
+            self.uav_paths.append(path)
+
         self.window.set_title("CUDA Particle Density (Interval Refresh)")
         self.window.set_xlabel("X (km)")
         self.window.set_ylabel("Y (km)")
-        self.window.legend()
+        if self.cfg.fleet.uav_count <= 8:
+            self.window.legend()
 
         self.status_text = self.fig.text(
             self.cfg.figure.debug_text_x,
@@ -107,25 +114,29 @@ class SimVisualizer:
             self.video_writer.setup(self.fig, self.video_output_path, dpi=self.effective_video_dpi)
             print(f"Video export enabled: {self.video_output_path}")
 
-    def update(self, particle_system, uav_controller, data_logger, elapsed_h: float, remaining_particles: int) -> None:
+    def update(self, particle_system, fleet_controller, data_logger, elapsed_h: float, remaining_particles: int) -> None:
         """刷新一帧：密度图、UAV 位置/轨迹、状态文本、视频帧。"""
         if not self.cfg.enable_visual_output:
             return
 
         assert self.im is not None
-        assert self.uav_dot is not None
-        assert self.uav_path is not None
         assert self.fig is not None
 
         # 该调用包含 GPU->CPU 回传，是可视化路径中的主要开销点。
         density_matrix = particle_system.get_counts_in_grids()
         self.im.set_data(density_matrix)
 
-        x_km, y_km = uav_controller.position_km()
-        self.uav_dot.set_data([x_km], [y_km])
-        self.uav_path.set_data(data_logger.uav_traj_x_km, data_logger.uav_traj_y_km)
+        for i, uav in enumerate(fleet_controller.controllers):
+            if i >= len(self.uav_dots):
+                break
+            x_km, y_km = uav.position_km()
+            self.uav_dots[i].set_data([x_km], [y_km])
+            self.uav_paths[i].set_data(
+                data_logger.uav_traj_x_km_by_id.get(i, []),
+                data_logger.uav_traj_y_km_by_id.get(i, []),
+            )
 
-        self._update_status_panel(uav_controller, elapsed_h, remaining_particles)
+        self._update_status_panel(fleet_controller, elapsed_h, remaining_particles)
         self.fig.canvas.draw()
 
         if self.cfg.runtime.realtime_visualization:
@@ -134,16 +145,27 @@ class SimVisualizer:
         if self.video_writer is not None:
             self.video_writer.grab_frame()
 
-    def _update_status_panel(self, uav_controller, elapsed_h: float, remaining_particles: int) -> None:
+    def _update_status_panel(self, fleet_controller, elapsed_h: float, remaining_particles: int) -> None:
         """更新左侧状态面板文本。"""
         assert self.status_text is not None
-        x_km, y_km = uav_controller.position_km()
         remaining_ratio = (remaining_particles / self.cfg.simulation.n_particles) * 100.0
+
+        active_count = sum(1 for flag in fleet_controller.active_flags if flag)
+        status_lines = [
+            f"UAV active: {active_count}/{len(fleet_controller.controllers)}",
+            f"Time: {elapsed_h:.2f} h",
+            f"Particles: {remaining_particles}/{self.cfg.simulation.n_particles} ({remaining_ratio:.2f}%)",
+        ]
+
+        preview_count = min(4, len(fleet_controller.controllers))
+        for i in range(preview_count):
+            uav = fleet_controller.controllers[i]
+            x_km, y_km = uav.position_km()
+            state_tag = "A" if fleet_controller.active_flags[i] else "E"
+            status_lines.append(f"#{i}[{state_tag}] ({x_km:.1f}, {y_km:.1f}) km {uav.angle_deg():.0f} deg")
+
         self.status_text.set_text(
-            f"UAV: ({x_km:.2f}, {y_km:.2f}) km\n"
-            f"Angle: {uav_controller.angle_deg():.1f} deg\n"
-            f"Time: {elapsed_h:.2f} h\n"
-            f"Particles: {remaining_particles}/{self.cfg.simulation.n_particles} ({remaining_ratio:.2f}%)"
+            "\n".join(status_lines)
         )
 
     def save_summary_figure(self, history_count: list[int]) -> None:

@@ -8,7 +8,7 @@ import numpy as np
 class UAVController:
     """单机 UAV 控制逻辑（设备无关，仅做坐标与角度计算）。"""
 
-    def __init__(self, cfg, uav_id: int = 0):
+    def __init__(self, cfg, uav_id: int = 0, start_pos_u: tuple[int, int] | None = None):
         self.cfg = cfg
         self.uav_id = uav_id
 
@@ -19,8 +19,11 @@ class UAVController:
         self.turning_angle_each = 0.0
         self.turn_step_remain = 0
 
-        # 起点位于左侧条带边缘，便于从左向右覆盖。
-        self.pos_u = np.array([self.cfg.derived.uav_scan_radius_u, 0], dtype=np.int64)
+        # 未指定时使用默认起点；多机模式可为每架 UAV 指定独立起点。
+        if start_pos_u is None:
+            self.pos_u = np.array([self.cfg.derived.uav_scan_radius_u, 0], dtype=np.int64)
+        else:
+            self.pos_u = np.array([int(start_pos_u[0]), int(start_pos_u[1])], dtype=np.int64)
         self.turn_from_x_u = 0
         self.turn_from_y_u = 0
         self.turn_to_x_u = 0
@@ -168,3 +171,85 @@ class UAVController:
                 )
 
         return True
+
+
+class UAVFleetController:
+    """多机封装：统一初始化、统一步进、统一获取活跃位置。"""
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.controllers: list[UAVController] = []
+        self.active_flags: list[bool] = []
+        self.last_step_positions_u: list[tuple[int, int]] = []
+        self._build_controllers()
+
+    def _build_controllers(self) -> None:
+        d = self.cfg.derived
+        # 防止极小 spacing 被 round 成 0，导致所有 UAV 初始重叠。
+        spacing_u = max(1, int(round(self.cfg.fleet.start_spacing_scan_diameters * 2 * d.uav_scan_radius_u)))
+        base_x = d.uav_scan_radius_u
+        y0 = 0
+        clamped_count = 0
+        used_x: set[int] = set()
+        overlap_count = 0
+
+        for i in range(self.cfg.fleet.uav_count):
+            x = base_x + i * spacing_u
+            x_clamped = max(0, min(d.area_width_u, x))
+            if x_clamped != x:
+                clamped_count += 1
+            if x_clamped in used_x:
+                overlap_count += 1
+            used_x.add(x_clamped)
+
+            x = x_clamped
+            uav = UAVController(self.cfg, uav_id=i, start_pos_u=(x, y0))
+            self.controllers.append(uav)
+            self.active_flags.append(True)
+
+        if clamped_count > 0 or overlap_count > 0:
+            print(
+                "[FLEET][WARN] start positions compressed by boundary constraints: "
+                f"clamped={clamped_count}, overlapped={overlap_count}, "
+                f"unique_x={len(used_x)}/{self.cfg.fleet.uav_count}."
+            )
+
+    @property
+    def primary_controller(self) -> UAVController:
+        """返回主 UAV（用于兼容现有日志/可视化接口）。"""
+        return self.controllers[0]
+
+    @property
+    def active_positions_u(self) -> list[tuple[int, int]]:
+        """返回仍在扫描中的 UAV 当前位置列表。"""
+        return [
+            uav.position_u
+            for uav, active in zip(self.controllers, self.active_flags)
+            if active
+        ]
+
+    @property
+    def scan_positions_u(self) -> list[tuple[int, int]]:
+        """返回本步应参与扫描的位置（含本步刚结束的 UAV 终点）。"""
+        return self.last_step_positions_u
+
+    def update_all(self, elapsed_time_h: float) -> bool:
+        """
+        推进所有活跃 UAV 一步。
+
+        返回：是否仍至少有一架 UAV 在继续扫描。
+        """
+        any_active = False
+        step_positions: list[tuple[int, int]] = []
+        for i, uav in enumerate(self.controllers):
+            if not self.active_flags[i]:
+                continue
+            keep_running = uav.update(elapsed_time_h)
+            step_positions.append(uav.position_u)
+            if not keep_running:
+                self.active_flags[i] = False
+            else:
+                any_active = True
+
+        self.last_step_positions_u = step_positions
+        return any_active

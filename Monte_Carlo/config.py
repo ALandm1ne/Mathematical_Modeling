@@ -29,9 +29,15 @@ class MotionConfig:
 
 
 @dataclass
+class FleetConfig:
+    uav_count: int = 2                          # UAV 数量（>=1）
+    start_spacing_scan_diameters: float = 3.5  # 相邻起始间距（单位：扫描直径倍数）
+
+
+@dataclass
 class RuntimeSwitchesConfig:
     realtime_visualization: bool = False  # 是否开启实时交互窗口
-    export_simulation_video: bool = False # 是否导出仿真视频（mp4/gif）
+    export_simulation_video: bool = True # 是否导出仿真视频（mp4/gif）
     export_uav_trajectory: bool = True    # 是否导出 UAV 轨迹文件
 
 
@@ -121,6 +127,7 @@ class AppConfig:
     simulation: SimulationTuningConfig               # 仿真核心参数
     environment: EnvironmentConfig                   # 区域参数
     motion: MotionConfig                             # 运动参数
+    fleet: FleetConfig                               # 机群参数
     runtime: RuntimeSwitchesConfig                  # 运行时功能开关
     refresh: RefreshPolicyConfig                    # 刷新策略
     export: ExportConfig                             # 数据导出策略
@@ -176,6 +183,10 @@ class AppConfig:
             raise ValueError("grid_size_km must be > 0")
         if self.motion.uav_scan_radius_km <= 0:
             raise ValueError("uav_scan_radius_km must be > 0")
+        if self.fleet.uav_count <= 0:
+            raise ValueError("uav_count must be > 0")
+        if self.fleet.start_spacing_scan_diameters <= 0:
+            raise ValueError("start_spacing_scan_diameters must be > 0")
         if self.export.trajectory_export_format.lower() not in {"csv", "parquet", "both"}:
             raise ValueError("trajectory_export_format must be one of csv/parquet/both")
 
@@ -200,6 +211,7 @@ def build_default_config(script_dir: str) -> AppConfig:
         simulation=SimulationTuningConfig(),
         environment=EnvironmentConfig(),
         motion=MotionConfig(),
+        fleet=FleetConfig(),
         runtime=RuntimeSwitchesConfig(),
         refresh=RefreshPolicyConfig(),
         export=ExportConfig(),

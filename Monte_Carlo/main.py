@@ -13,7 +13,7 @@ from collections import deque
 
 from config import build_default_config
 from core.simulation_gpu import ParticleSystem
-from core.uav_controller import UAVController
+from core.uav_controller import UAVFleetController
 from utils.data_manager import DataLogger
 from visualizer import SimVisualizer
 
@@ -52,8 +52,8 @@ def main() -> None:
     print(f"Results directory: {data_logger.run_results_dir}")
 
     particle_system = ParticleSystem(cfg)
-    uav_controller = UAVController(cfg, uav_id=0)
-    data_logger.init_uav_trace(uav_controller)
+    fleet_controller = UAVFleetController(cfg)
+    data_logger.init_uav_trace_fleet(fleet_controller.controllers)
 
     # 可视化初始化阶段读取一次初始密度，用于固定色条范围。
     initial_density = None
@@ -75,33 +75,39 @@ def main() -> None:
         # 无活跃粒子表示搜索空间已被完全排除，可提前结束。
         if particle_system.active_count <= 0:
             break
+        # 无活跃 UAV 时无需继续推进粒子。
+        if not fleet_controller.active_positions_u:
+            break
 
         # A) Particle motion on GPU.
         particle_system.update_particles()
 
-        # B) UAV motion on CPU.
-        if not uav_controller.update(time_elapsed_h):
-            break
+        # B) UAV fleet motion on CPU.
+        any_uav_active = fleet_controller.update_all(time_elapsed_h)
 
-        # C) Scan and inactivate particles covered by UAV.
-        remaining_particles = particle_system.remove_scanned_particles(uav_controller.position_u)
+        # C) Scan and inactivate particles covered by all UAVs moved in this step.
+        #    包含“本步刚结束扫描”的 UAV 终点位置，避免终点步漏扫。
+        remaining_particles = particle_system.active_count
+        for pos_u in fleet_controller.scan_positions_u:
+            remaining_particles = particle_system.remove_scanned_particles(pos_u)
 
         # D) Bookkeeping.
         history_count.append(remaining_particles)
         time_elapsed_h += cfg.simulation.dt_h
         sim_step_counter += 1
 
-        data_logger.record_uav_step_trace(
+        data_logger.record_uav_step_trace_fleet(
             step=sim_step_counter,
             time_h=time_elapsed_h,
-            uav_controller=uav_controller,
+            controllers=fleet_controller.controllers,
+            active_flags=fleet_controller.active_flags,
             remaining_particles=remaining_particles,
         )
 
         if cfg.enable_visual_output and step % cfg.refresh.steps_to_update == 0:
             visualizer.update(
                 particle_system=particle_system,
-                uav_controller=uav_controller,
+                fleet_controller=fleet_controller,
                 data_logger=data_logger,
                 elapsed_h=time_elapsed_h,
                 remaining_particles=remaining_particles,
@@ -123,12 +129,14 @@ def main() -> None:
 
         if remaining_particles <= 0:
             break
+        if not any_uav_active:
+            break
 
     # Final frame to include the true terminal state.
     if cfg.enable_visual_output and history_count:
         visualizer.update(
             particle_system=particle_system,
-            uav_controller=uav_controller,
+            fleet_controller=fleet_controller,
             data_logger=data_logger,
             elapsed_h=time_elapsed_h,
             remaining_particles=history_count[-1],

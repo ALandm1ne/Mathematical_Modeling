@@ -24,39 +24,72 @@ class DataLogger:
         self.uav_step_trace = {
             "step": [],
             "time_h": [],
+            "uav_id": [],
+            "is_active": [],
             "x_km": [],
             "y_km": [],
             "angle_deg": [],
             "is_turning": [],
             "remaining_particles": [],
         }
-        self.uav_traj_x_km = []
-        self.uav_traj_y_km = []
+        self.uav_traj_x_km_by_id: dict[int, list[float]] = {}
+        self.uav_traj_y_km_by_id: dict[int, list[float]] = {}
 
     def init_uav_trace(self, uav_controller) -> None:
-        """写入 UAV 初始位置，确保轨迹从起点开始可视化。"""
-        x_km, y_km = uav_controller.position_km()
-        self.uav_traj_x_km = [x_km]
-        self.uav_traj_y_km = [y_km]
+        """兼容单机接口：写入单架 UAV 初始位置。"""
+        self.init_uav_trace_fleet([uav_controller])
+
+    def init_uav_trace_fleet(self, controllers) -> None:
+        """写入机群初始位置，确保每条轨迹从起点开始可视化。"""
+        self.uav_traj_x_km_by_id.clear()
+        self.uav_traj_y_km_by_id.clear()
+        for uav in controllers:
+            x_km, y_km = uav.position_km()
+            self.uav_traj_x_km_by_id[int(uav.uav_id)] = [x_km]
+            self.uav_traj_y_km_by_id[int(uav.uav_id)] = [y_km]
 
     def record_uav_step_trace(self, step: int, time_h: float, uav_controller, remaining_particles: int) -> None:
-        """记录单步轨迹与状态信息。"""
-        uav_x_km, uav_y_km = uav_controller.position_km()
+        """兼容单机接口：记录单架 UAV 单步轨迹。"""
+        self.record_uav_step_trace_fleet(
+            step=step,
+            time_h=time_h,
+            controllers=[uav_controller],
+            active_flags=[True],
+            remaining_particles=remaining_particles,
+        )
 
-        self.uav_step_trace["step"].append(step)
-        self.uav_step_trace["time_h"].append(time_h)
-        self.uav_step_trace["x_km"].append(uav_x_km)
-        self.uav_step_trace["y_km"].append(uav_y_km)
-        self.uav_step_trace["angle_deg"].append(uav_controller.angle_deg())
-        self.uav_step_trace["is_turning"].append(bool(uav_controller.is_turning))
-        self.uav_step_trace["remaining_particles"].append(int(remaining_particles))
+    def record_uav_step_trace_fleet(
+        self,
+        step: int,
+        time_h: float,
+        controllers,
+        active_flags,
+        remaining_particles: int,
+    ) -> None:
+        """记录机群单步轨迹与状态信息（每架 UAV 一行）。"""
+        for uav, is_active in zip(controllers, active_flags):
+            uav_x_km, uav_y_km = uav.position_km()
+            uav_id = int(uav.uav_id)
 
-        self.uav_traj_x_km.append(uav_x_km)
-        self.uav_traj_y_km.append(uav_y_km)
+            self.uav_step_trace["step"].append(step)
+            self.uav_step_trace["time_h"].append(time_h)
+            self.uav_step_trace["uav_id"].append(uav_id)
+            self.uav_step_trace["is_active"].append(bool(is_active))
+            self.uav_step_trace["x_km"].append(uav_x_km)
+            self.uav_step_trace["y_km"].append(uav_y_km)
+            self.uav_step_trace["angle_deg"].append(uav.angle_deg())
+            self.uav_step_trace["is_turning"].append(bool(uav.is_turning))
+            self.uav_step_trace["remaining_particles"].append(int(remaining_particles))
+
+            if uav_id not in self.uav_traj_x_km_by_id:
+                self.uav_traj_x_km_by_id[uav_id] = []
+                self.uav_traj_y_km_by_id[uav_id] = []
+            self.uav_traj_x_km_by_id[uav_id].append(uav_x_km)
+            self.uav_traj_y_km_by_id[uav_id].append(uav_y_km)
 
     def _get_trajectory_fieldnames(self):
         """按配置返回导出字段集合（基础字段 / 扩展字段）。"""
-        base_fields = ["step", "time_h", "x_km", "y_km"]
+        base_fields = ["step", "time_h", "uav_id", "is_active", "x_km", "y_km"]
         if not self.cfg.export.trajectory_include_extended:
             return base_fields
         return base_fields + ["angle_deg", "is_turning", "remaining_particles"]
@@ -101,6 +134,8 @@ class DataLogger:
                 row = {
                     "step": self.uav_step_trace["step"][i],
                     "time_h": self.uav_step_trace["time_h"][i],
+                    "uav_id": self.uav_step_trace["uav_id"][i],
+                    "is_active": self.uav_step_trace["is_active"][i],
                     "x_km": self.uav_step_trace["x_km"][i],
                     "y_km": self.uav_step_trace["y_km"][i],
                     "angle_deg": self.uav_step_trace["angle_deg"][i],
