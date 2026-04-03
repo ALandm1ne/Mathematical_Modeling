@@ -23,7 +23,7 @@ import torch
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-# ------------------------------------------全局变量------------------------------------------
+# ------------------------------------------ 全局变量 ------------------------------------------
 
 # --- 参数设置 ---
 AREA_WIDTH_KM = 306.0  # 模拟区域宽度，单位 km（经度方向跨度）
@@ -51,15 +51,7 @@ particle_step_u = int(round(TARGET_SPEED_KM * DT * SCALE))  # 目标粒子每步
 TWO_PI = 2.0 * math.pi
 PI = math.pi
 
-# --------- 绘制设置 ---------
-
-# --- 设备设置（仅支持 CUDA） ---
-if not torch.cuda.is_available():
-    raise RuntimeError('CUDA is required but not available.')
-
-DEVICE = torch.device('cuda')
-GPU_NAME = torch.cuda.get_device_name(0)
-print(f'Using CUDA device: {GPU_NAME}')
+# ------------------------------------------ 绘制设置 ------------------------------------------
 
 STEPS_TO_UPDATE = 30  # 每隔多少步更新一次绘图（调整以平衡性能和实时性）
 GRID_SIZE_U = 2 * SCALE  # 热力图网格大小（2km x 2km）
@@ -76,7 +68,7 @@ DEBUG_TEXT_Y = 0.075  # 文本顶部距离 figure 下边界
 REALTIME_VISUALIZATION = False
 
 # 仿真视频导出开关（推荐在无界面模式下使用）
-EXPORT_SIMULATION_VIDEO = True
+EXPORT_SIMULATION_VIDEO = False
 VIDEO_OUTPUT_FILENAME = 'simulation.mp4'
 VIDEO_FPS = 10
 VIDEO_DPI = 480
@@ -98,9 +90,10 @@ UAV_TRAJECTORY_INCLUDE_EXTENDED = True
 # 性能优化开关：启用后复用活跃粒子索引缓存，减少每步 nonzero 开销
 USE_ACTIVE_INDEX_CACHE = True
 
+# 总开关：只要有一个输出相关功能开启，就启用可视化输出逻辑
 ENABLE_VISUAL_OUTPUT = REALTIME_VISUALIZATION or EXPORT_SIMULATION_VIDEO
 
-# 输出路径统一管理：所有产物写入 main.py 同目录/results/<timestamp>/
+# 输出路径：所有产物写入 main.py 同目录/results/<timestamp>/
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 RESULTS_ROOT_DIR = os.path.join(SCRIPT_DIR, 'results')
 RUN_TIMESTAMP = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -112,7 +105,15 @@ print(f'Results directory: {RUN_RESULTS_DIR}')
 matplotlib.use('QtAgg' if REALTIME_VISUALIZATION else 'Agg')
 import matplotlib.pyplot as plt
 
-# ------------------------------------------初始化------------------------------------------
+# --- 设备设置（仅支持 CUDA） ---
+if not torch.cuda.is_available():
+    raise RuntimeError('CUDA is required but not available.')
+
+DEVICE = torch.device('cuda')
+GPU_NAME = torch.cuda.get_device_name(0)
+print(f'Using CUDA device: {GPU_NAME}')
+
+# ------------------------------------------ 初始化 ------------------------------------------
 
 def init_particles_on_cuda(num_particles: int):
     """
@@ -781,9 +782,27 @@ if REALTIME_VISUALIZATION:
 # 若曲线快速下降，说明扫描路径覆盖效率较高。
 plt.figure(figsize=SUMMARY_FIG_SIZE)
 plt.plot(history_count)
+
+# 标注终点坐标，便于在导出图片中直接读取最终结果
+if history_count:
+    end_x = len(history_count) - 1
+    end_y = history_count[-1]
+    plt.scatter([end_x], [end_y], color='red', s=28, zorder=3)
+    plt.annotate(
+        f'({end_x}, {end_y})',
+        xy=(end_x, end_y),
+        xytext=(8, 8),
+        textcoords='offset points',
+        color='black',
+        fontsize=9,
+        bbox=dict(boxstyle='round', facecolor='white', alpha=0.75, edgecolor='gray'),
+    )
+
 plt.title('Remaining Potential Target Particles Over Time')
 plt.xlabel('Time Steps')
 plt.ylabel('Particle Count')
+plt.xlim(left=0)    # x 轴起点设为 0
+plt.ylim(bottom=0)  # y 轴起点设为 0
 plt.grid(True)
 
 if REALTIME_VISUALIZATION:
