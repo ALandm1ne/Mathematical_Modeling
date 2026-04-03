@@ -78,8 +78,8 @@ REALTIME_VISUALIZATION = False
 # 仿真视频导出开关（推荐在无界面模式下使用）
 EXPORT_SIMULATION_VIDEO = True
 VIDEO_OUTPUT_FILENAME = 'simulation.mp4'
-VIDEO_FPS = 20
-VIDEO_DPI = 120
+VIDEO_FPS = 10
+VIDEO_DPI = 480
 
 # 显示窗口尺寸参数（单位：英寸）
 MAIN_FIG_SIZE = (12, 12)      # 主仿真窗口尺寸
@@ -753,6 +753,10 @@ for step in range(MAX_STEPS):
     if ENABLE_VISUAL_OUTPUT and step % STEPS_TO_UPDATE == 0:
         remaining_particles = history_count[-1]
         update_visualization(remaining_particles)
+
+# 循环可能在“未到刷新步”时结束，补一帧最终状态到窗口/视频
+if ENABLE_VISUAL_OUTPUT and history_count:
+    update_visualization(history_count[-1])
 
 torch.cuda.synchronize()
 sim_cost = time.perf_counter() - sim_start_time
