@@ -79,6 +79,29 @@ class FigureConfig:
 
 
 @dataclass
+class SnapshotConfig:
+    enable: bool = True                               # 是否开启状态快照
+    sample_times_h: tuple = (0.0, 5.0, 10.0, 15.0)   # 固定采样时刻（小时）
+    include_terminal_snapshot: bool = True            # 结束时是否补终态快照
+    output_filename_npz: str = "state_snapshots.npz"  # 快照矩阵输出文件
+
+
+@dataclass
+class PlotConfig:
+    output_subdir_name: str = "plots"  # 每次 run 的绘图输出子目录
+    dpi: int = 300                      # 论文级导出 DPI
+    airport_x_km: float = 153.0         # 温州机场 x 坐标（相对仿真区域，km）
+    airport_y_km: float = 222.0         # 温州机场 y 坐标（相对仿真区域，km）
+    airport_label: str = "Wenzhou Airport"
+
+
+@dataclass
+class AnalysisConfig:
+    batch_all_runs: bool = True                     # 后处理默认扫描所有 run
+    summary_subdir_name: str = "_analysis_summary"  # 跨 run 汇总目录
+
+
+@dataclass
 class PathConfig:
     script_dir: str                                # 脚本所在目录（作为输出根路径基准）
     results_root_name: str = "results"            # 结果根目录名称
@@ -134,6 +157,9 @@ class AppConfig:
     video: VideoConfig                               # 视频导出策略
     memory: MemoryMonitorConfig                      # 内存监控策略
     figure: FigureConfig                             # 图形尺寸与布局参数
+    snapshot: SnapshotConfig                         # 状态快照策略
+    plot: PlotConfig                                 # 后处理绘图策略
+    analysis: AnalysisConfig                         # 后处理批处理策略
     paths: PathConfig                                # 路径策略
     numeric: NumericCoreConfig                       # 数值核心参数（定点缩放等）
     debug: DebugFlagsConfig                          # 调试/性能开关
@@ -187,6 +213,10 @@ class AppConfig:
             raise ValueError("uav_count must be > 0")
         if self.fleet.start_spacing_scan_diameters <= 0:
             raise ValueError("start_spacing_scan_diameters must be > 0")
+        if self.plot.dpi <= 0:
+            raise ValueError("plot.dpi must be > 0")
+        if len(self.snapshot.sample_times_h) == 0:
+            raise ValueError("snapshot.sample_times_h must not be empty")
         if self.export.trajectory_export_format.lower() not in {"csv", "parquet", "both"}:
             raise ValueError("trajectory_export_format must be one of csv/parquet/both")
 
@@ -205,7 +235,7 @@ class AppConfig:
         self.device_runtime = DeviceRuntime(device=device, gpu_name=gpu_name)
 
 
-def build_default_config(script_dir: str) -> AppConfig:
+def build_default_config(script_dir: str, require_cuda_override: bool | None = None) -> AppConfig:
     """构建默认配置并完成：派生计算 + 校验 + 设备配置。"""
     cfg = AppConfig(
         simulation=SimulationTuningConfig(),
@@ -218,11 +248,16 @@ def build_default_config(script_dir: str) -> AppConfig:
         video=VideoConfig(),
         memory=MemoryMonitorConfig(),
         figure=FigureConfig(),
+        snapshot=SnapshotConfig(),
+        plot=PlotConfig(),
+        analysis=AnalysisConfig(),
         paths=PathConfig(script_dir=script_dir),
         numeric=NumericCoreConfig(),
         debug=DebugFlagsConfig(),
         device_policy=DevicePolicyConfig(),
     )
+    if require_cuda_override is not None:
+        cfg.device_policy.require_cuda = bool(require_cuda_override)
     cfg.recompute_derived()
     cfg.validate()
     cfg.configure_device()

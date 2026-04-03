@@ -13,6 +13,7 @@ from collections import deque
 
 from config import build_default_config
 from core.simulation_gpu import ParticleSystem
+from core.tracker import StateTracker
 from core.uav_controller import UAVFleetController
 from utils.data_manager import DataLogger
 from visualizer import SimVisualizer
@@ -53,12 +54,16 @@ def main() -> None:
 
     particle_system = ParticleSystem(cfg)
     fleet_controller = UAVFleetController(cfg)
+    state_tracker = StateTracker(cfg)
     data_logger.init_uav_trace_fleet(fleet_controller.controllers)
 
-    # 可视化初始化阶段读取一次初始密度，用于固定色条范围。
+    # 可视化初始化阶段读取一次初始密度，用于固定色条范围；快照也复用该帧。
     initial_density = None
-    if cfg.enable_visual_output:
+    if cfg.enable_visual_output or cfg.snapshot.enable:
         initial_density = particle_system.get_counts_in_grids()
+
+    if cfg.snapshot.enable and initial_density is not None:
+        state_tracker.maybe_capture(step=0, time_h=0.0, density_map=initial_density)
 
     visualizer = SimVisualizer(cfg, data_logger.run_results_dir, initial_density)
 
@@ -113,6 +118,14 @@ def main() -> None:
                 remaining_particles=remaining_particles,
             )
 
+        if cfg.snapshot.enable:
+            density_for_snapshot = particle_system.get_counts_in_grids()
+            state_tracker.maybe_capture(
+                step=sim_step_counter,
+                time_h=time_elapsed_h,
+                density_map=density_for_snapshot,
+            )
+
         if cfg.memory.enable and step % cfg.memory.monitor_every_steps == 0:
             # 该监控为轻量级：每 N 步读取一次 RSS，避免影响主循环吞吐。
             rss_gb = _get_rss_gb()
@@ -142,11 +155,22 @@ def main() -> None:
             remaining_particles=history_count[-1],
         )
 
+    if cfg.snapshot.enable:
+        terminal_density = particle_system.get_counts_in_grids()
+        state_tracker.capture_terminal(
+            step=sim_step_counter,
+            time_h=time_elapsed_h,
+            density_map=terminal_density,
+        )
+
     sim_cost = time.perf_counter() - sim_start_time
     print(f"Simulation wall time: {sim_cost:.2f}s")
 
     # 收尾阶段统一导出，避免中途频繁 I/O 干扰计算性能。
     data_logger.export_uav_trace()
+    snapshot_file = state_tracker.export_npz(data_logger.run_results_dir)
+    if snapshot_file is not None:
+        print(f"State snapshots exported: {snapshot_file}")
     visualizer.finalize()
     visualizer.save_summary_figure(history_count)
 
