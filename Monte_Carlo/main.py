@@ -73,10 +73,10 @@ DEBUG_TEXT_Y = 0.075  # 文本顶部距离 figure 下边界
 # 实时可视化开关：
 # True  -> 开启实时窗口
 # False -> 关闭实时窗口（适合 SSH/无图形环境）
-REALTIME_VISUALIZATION = True
+REALTIME_VISUALIZATION = False
 
 # 仿真视频导出开关（推荐在无界面模式下使用）
-EXPORT_SIMULATION_VIDEO = False
+EXPORT_SIMULATION_VIDEO = True
 VIDEO_OUTPUT_FILENAME = 'simulation.mp4'
 VIDEO_FPS = 20
 VIDEO_DPI = 120
@@ -94,6 +94,9 @@ UAV_TRAJECTORY_PARQUET_COMPRESSION = 'zstd'  # 可选: 'zstd'/'snappy'/'gzip'/No
 # True: 导出扩展字段（angle_deg/is_turning/remaining_particles）
 # False: 仅导出基础字段（step/time_h/x_km/y_km）
 UAV_TRAJECTORY_INCLUDE_EXTENDED = True
+
+# 性能优化开关：启用后复用活跃粒子索引缓存，减少每步 nonzero 开销
+USE_ACTIVE_INDEX_CACHE = True
 
 ENABLE_VISUAL_OUTPUT = REALTIME_VISUALIZATION or EXPORT_SIMULATION_VIDEO
 
@@ -153,6 +156,9 @@ def init_particles_on_cuda(num_particles: int):
 
 
 particle_locations, particle_angles, particle_active_mask = init_particles_on_cuda(N_PARTICLES)
+
+# 活跃粒子索引缓存：默认全活跃，无需首次 nonzero
+active_idx_cache = torch.arange(N_PARTICLES, device=DEVICE, dtype=torch.int64)
 
 # --- 初始化无人机（仍保留 CPU 标量逻辑） ---
 uav_angle = 0.5 * np.pi  # 无人机当前航向角（弧度），0.5π 表示向上
@@ -498,7 +504,7 @@ def remove_scanned_particles(p_locs, active_mask, active_idx):
     仅将命中粒子在 active_mask 中标记为 False。
     """
     if active_idx.numel() == 0:
-        return
+        return active_idx, 0
 
     uav_x = int(uav_pos_u[0])
     uav_y = int(uav_pos_u[1])
@@ -511,11 +517,16 @@ def remove_scanned_particles(p_locs, active_mask, active_idx):
     dist2 = dx * dx + dy * dy
     hit_mask = dist2 <= UAV_SCAN_RADIUS_U2
 
-    if hit_mask.any():
+    hit_count = int(torch.count_nonzero(hit_mask).item())
+    if hit_count > 0:
         active_mask[active_idx[hit_mask]] = False
 
+    # 直接返回“幸存索引”，供下一步复用，避免重新 nonzero
+    next_active_idx = active_idx[~hit_mask]
+    return next_active_idx, hit_count
 
-def get_counts_in_grids(p_locs, active_mask):
+
+def get_counts_in_grids(p_locs, active_mask, active_idx=None):
     """
     统计所有网格的活跃粒子数量。
 
@@ -524,7 +535,9 @@ def get_counts_in_grids(p_locs, active_mask):
     2. 线性化为 1D 索引后用 bincount 聚合
     3. 最终 reshape 成 2D 矩阵并在绘图阶段回传 CPU
     """
-    active_idx = torch.nonzero(active_mask, as_tuple=True)[0]
+    # 优先使用外部传入的活跃索引缓存，避免重复执行 nonzero
+    if active_idx is None:
+        active_idx = torch.nonzero(active_mask, as_tuple=True)[0]
     if active_idx.numel() == 0:
         return np.zeros((N_Y_BINS, N_X_BINS), dtype=np.float32)
 
@@ -554,10 +567,13 @@ def run_one_step():
     C. 扫描剔除（GPU）
     D. 记录剩余粒子与时间
     """
-    global time_elapsed, sim_step_counter
+    global time_elapsed, sim_step_counter, active_idx_cache
 
-    # 当前仍“可能为目标”的粒子索引（True 表示尚未被扫描覆盖）
-    active_idx = torch.nonzero(particle_active_mask, as_tuple=True)[0]
+    # 当前仍“可能为目标”的粒子索引（优先使用缓存，避免每步 nonzero）
+    if USE_ACTIVE_INDEX_CACHE:
+        active_idx = active_idx_cache
+    else:
+        active_idx = torch.nonzero(particle_active_mask, as_tuple=True)[0]
     
     if active_idx.numel() == 0: # 没有活跃粒子了，提前结束仿真
         return False
@@ -570,10 +586,18 @@ def run_one_step():
         return False
 
     # C) 将当前扫描圆覆盖到的粒子标记为失活
-    remove_scanned_particles(particle_locations, particle_active_mask, active_idx)
+    next_active_idx, _ = remove_scanned_particles(
+        particle_locations,
+        particle_active_mask,
+        active_idx,
+    )
 
     # D) 统计剩余不确定粒子并推进仿真时钟
-    remaining_particles = int(torch.count_nonzero(particle_active_mask).item())
+    if USE_ACTIVE_INDEX_CACHE:
+        active_idx_cache = next_active_idx
+        remaining_particles = int(active_idx_cache.numel())
+    else:
+        remaining_particles = int(torch.count_nonzero(particle_active_mask).item())
     history_count.append(remaining_particles)
     time_elapsed += DT
     sim_step_counter += 1
@@ -596,7 +620,11 @@ if ENABLE_VISUAL_OUTPUT:
     fig.subplots_adjust(left=0.24)
 
     # 初始密度用来固定 colorbar 范围，避免刷新时色标跳动
-    initial_density_matrix = get_counts_in_grids(particle_locations, particle_active_mask)
+    initial_density_matrix = get_counts_in_grids(
+        particle_locations,
+        particle_active_mask,
+        active_idx=active_idx_cache if USE_ACTIVE_INDEX_CACHE else None,
+    )
     fixed_vmax = max(1.0, float(np.max(initial_density_matrix)))
 
     # 热力图：显示每个网格中的活跃粒子数（概率密度代理）
@@ -686,7 +714,11 @@ def update_visualization(remaining_particles):
     assert uav_path is not None
 
     # 每次刷新都会触发一次 GPU->CPU 数据回传，频率由 STEPS_TO_UPDATE 控制
-    density_matrix = get_counts_in_grids(particle_locations, particle_active_mask)
+    density_matrix = get_counts_in_grids(
+        particle_locations,
+        particle_active_mask,
+        active_idx=active_idx_cache if USE_ACTIVE_INDEX_CACHE else None,
+    )
     im.set_data(density_matrix)
 
     # 无人机当前位置（红点）
