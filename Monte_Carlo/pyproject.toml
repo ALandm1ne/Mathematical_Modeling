@@ -3,9 +3,11 @@ name = "monte-carlo"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.10"
 dependencies = [
+    "pyarrow>=23.0.1",
     "matplotlib>=3.10.8",
     "numpy>=2.4.4",
     "pyqt6>=6.11.0",
+    "torch",
 ]
