@@ -140,7 +140,10 @@ def main() -> None:
         #    包含“本步刚结束扫描”的 UAV 终点位置，避免终点步漏扫。
         remaining_particles = particle_system.active_count            # 先取当前剩余粒子数。
         for pos_u in fleet_controller.scan_positions_u:               # 对本步所有扫描位置逐个剔除。
-            remaining_particles = particle_system.remove_scanned_particles(pos_u)
+            remaining_particles = particle_system.remove_scanned_particles(
+                pos_u,
+                cfg.motion.uav_detection_probability,
+            )
 
         # D) Bookkeeping.
         history_count.append(remaining_particles)                     # 记录收敛曲线数据。

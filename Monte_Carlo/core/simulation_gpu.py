@@ -100,9 +100,9 @@ class ParticleSystem:
         self.p_locs[active_idx] = p_active
         self.p_angles[active_idx] = new_angles
 
-    def remove_scanned_particles(self, uav_pos_u: tuple[int, int]) -> int:
+    def remove_scanned_particles(self, uav_pos_u: tuple[int, int], detection_probability: float) -> int:
         """
-        按 UAV 扫描圆剔除粒子。
+        按 UAV 扫描圆 + 命中概率剔除粒子。
 
         注意：不做物理删除，仅更新 active_mask 并维护 active_idx_cache。
         """
@@ -121,11 +121,21 @@ class ParticleSystem:
         dist2 = dx * dx + dy * dy
         hit_mask = dist2 <= d.uav_scan_radius_u2
 
+        p = float(detection_probability)
         if torch.any(hit_mask):
-            self.p_active_mask[active_idx[hit_mask]] = False
+            if p >= 1.0:
+                remove_mask = hit_mask
+            elif p <= 0.0:
+                remove_mask = torch.zeros_like(hit_mask, dtype=torch.bool)
+            else:
+                hit_rand = torch.rand(active_idx.numel(), device=self.device, dtype=torch.float32)
+                remove_mask = hit_mask & (hit_rand < p)
+            self.p_active_mask[active_idx[remove_mask]] = False
+        else:
+            remove_mask = torch.zeros_like(hit_mask, dtype=torch.bool)
 
         # 命中剔除后直接收缩索引缓存，维持增量更新路径。
-        next_active_idx = active_idx[~hit_mask]
+        next_active_idx = active_idx[~remove_mask]
         if self.cfg.debug.use_active_index_cache:
             self.active_idx_cache = next_active_idx
             return int(self.active_idx_cache.numel())

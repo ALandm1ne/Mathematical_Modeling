@@ -26,6 +26,7 @@ class MotionConfig:
     target_speed_km_h: float = 30.0    # 目标机动速度，单位 km/h
     uav_speed_km_h: float = 150.0      # 无人机巡航速度，单位 km/h
     uav_scan_radius_km: float = 20.0   # 无人机传感器扫描半径，单位 km
+    uav_detection_probability: float = 0.1  # UAV 扫描命中后的剔除概率，范围 [0, 1]
 
 
 @dataclass
@@ -42,9 +43,9 @@ class UAVFleetModeConfig:
 @dataclass
 class RuntimeSwitchesConfig:
     """运行开关与演示模式配置。"""
-    realtime_visualization: bool = True                # 是否开启实时交互窗口
+    realtime_visualization: bool = False                # 是否开启实时交互窗口
     export_simulation_video: bool = True               # 是否导出仿真视频（mp4/gif）
-    export_uav_trajectory: bool = True                 # 是否导出 UAV 轨迹文件
+    export_uav_trajectory: bool = False                 # 是否导出 UAV 轨迹文件
 
     # API 演示模式：仅作为“额外路径来源”，不改变路径模式语义。
     api_demo_enable: bool = True                      # 是否启用演示路径来源
@@ -53,7 +54,7 @@ class RuntimeSwitchesConfig:
 
 @dataclass
 class RefreshPolicyConfig:
-    steps_to_update: int = 30  # 可视化刷新间隔（每 N 步刷新一次）
+    steps_to_update: int = 10  # 可视化刷新间隔（每 N 步刷新一次）
 
 
 @dataclass
@@ -193,6 +194,8 @@ class AppConfig:
             raise ValueError("grid_size_km must be > 0")
         if self.motion.uav_scan_radius_km <= 0:
             raise ValueError("uav_scan_radius_km must be > 0")
+        if not (0.0 <= self.motion.uav_detection_probability <= 1.0):
+            raise ValueError("uav_detection_probability must be in [0, 1]")
         if self.export.trajectory_export_format.lower() not in {"csv", "parquet", "both"}:
             raise ValueError("trajectory_export_format must be one of csv/parquet/both")
         if self.uav_fleet_mode.missing_path_action not in {"warn_and_exit", "raise"}:

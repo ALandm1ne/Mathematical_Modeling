@@ -4,15 +4,26 @@ import math
 import os
 import sys
 
+import torch
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 from config import build_default_config
+from core.simulation_gpu import ParticleSystem
 from core.uav_controller import ArcTurnSpec, UAVFleetBuilder, UAVPathGenerator, UAVPathSpec
 from main import _resolve_external_path_source
 
 
 def _build_cfg():
     return build_default_config(os.path.dirname(__file__), require_cuda_override=False)
+
+
+def _build_small_particle_system(n_particles: int = 20000):
+    cfg = _build_cfg()
+    cfg.simulation.n_particles = n_particles
+    cfg.debug.use_active_index_cache = True
+    ps = ParticleSystem(cfg)
+    return cfg, ps
 
 
 def test_removed_legacy_apis():
@@ -157,6 +168,96 @@ def test_strict_validation_on_invalid_specs():
     except ValueError as e:
         print(f"  strict validation blocked invalid angle: {e}")
 
+    print()
+
+
+def test_detection_probability_config_validation():
+    print("=" * 60)
+    print("Test 4.1: Detection Probability Config Validation")
+    print("=" * 60)
+
+    cfg = _build_cfg()
+    cfg.motion.uav_detection_probability = -0.1
+    try:
+        cfg.validate()
+        raise AssertionError("p=-0.1 should fail")
+    except ValueError as e:
+        print(f"  invalid p=-0.1 blocked: {e}")
+
+    cfg.motion.uav_detection_probability = 1.1
+    try:
+        cfg.validate()
+        raise AssertionError("p=1.1 should fail")
+    except ValueError as e:
+        print(f"  invalid p=1.1 blocked: {e}")
+
+    cfg.motion.uav_detection_probability = 0.0
+    cfg.validate()
+    cfg.motion.uav_detection_probability = 1.0
+    cfg.validate()
+    print("  p=0 and p=1 accepted")
+    print()
+
+
+def test_detection_probability_boundaries():
+    print("=" * 60)
+    print("Test 4.2: Detection Probability Boundaries")
+    print("=" * 60)
+
+    _, ps = _build_small_particle_system(12000)
+    ps.p_locs[:, 0] = 0
+    ps.p_locs[:, 1] = 0
+    ps.p_active_mask[:] = True
+    ps.active_idx_cache = torch.arange(ps.p_locs.shape[0], device=ps.device, dtype=torch.int64)
+
+    remain_p0 = ps.remove_scanned_particles((0, 0), 0.0)
+    assert remain_p0 == ps.p_locs.shape[0], "p=0 should not remove any particle"
+    print(f"  p=0.0 remaining: {remain_p0}")
+
+    ps.p_active_mask[:] = True
+    ps.active_idx_cache = torch.arange(ps.p_locs.shape[0], device=ps.device, dtype=torch.int64)
+    remain_p1 = ps.remove_scanned_particles((0, 0), 1.0)
+    assert remain_p1 == 0, "p=1 should remove all hit particles"
+    print(f"  p=1.0 remaining: {remain_p1}")
+    print()
+
+
+def test_detection_probability_statistics_and_independence():
+    print("=" * 60)
+    print("Test 4.3: Detection Probability Statistics & Independence")
+    print("=" * 60)
+
+    p = 0.3
+    n = 60000
+    expected_single = p
+    expected_double = 1.0 - (1.0 - p) ** 2
+
+    _, ps_single = _build_small_particle_system(n)
+    ps_single.p_locs[:, 0] = 0
+    ps_single.p_locs[:, 1] = 0
+    ps_single.p_active_mask[:] = True
+    ps_single.active_idx_cache = torch.arange(n, device=ps_single.device, dtype=torch.int64)
+    torch.manual_seed(20260404)
+    remain_single = ps_single.remove_scanned_particles((0, 0), p)
+    removed_ratio_single = 1.0 - (remain_single / n)
+
+    _, ps_double = _build_small_particle_system(n)
+    ps_double.p_locs[:, 0] = 0
+    ps_double.p_locs[:, 1] = 0
+    ps_double.p_active_mask[:] = True
+    ps_double.active_idx_cache = torch.arange(n, device=ps_double.device, dtype=torch.int64)
+    torch.manual_seed(20260404)
+    ps_double.remove_scanned_particles((0, 0), p)
+    remain_double = ps_double.remove_scanned_particles((0, 0), p)
+    removed_ratio_double = 1.0 - (remain_double / n)
+
+    assert abs(removed_ratio_single - expected_single) < 0.03
+    assert abs(removed_ratio_double - expected_double) < 0.03
+    assert removed_ratio_double > removed_ratio_single
+    print(
+        f"  single={removed_ratio_single:.4f} (expected~{expected_single:.4f}), "
+        f"double={removed_ratio_double:.4f} (expected~{expected_double:.4f})"
+    )
     print()
 
 
@@ -321,6 +422,9 @@ if __name__ == "__main__":
     test_custom_paths_json()
     test_programmatic_construction()
     test_strict_validation_on_invalid_specs()
+    test_detection_probability_config_validation()
+    test_detection_probability_boundaries()
+    test_detection_probability_statistics_and_independence()
     test_main_path_source_policy()
     test_continuity_constraints()
     test_angle_and_zero_deg_behavior()
