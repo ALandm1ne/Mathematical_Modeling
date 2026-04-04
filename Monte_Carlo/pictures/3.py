@@ -11,7 +11,9 @@
 
 from __future__ import annotations
 
+import csv
 import os
+import re
 import sys
 from dataclasses import dataclass
 
@@ -128,6 +130,92 @@ def _build_serpentine_path(
     return np.asarray(points, dtype=np.float64)
 
 
+def _find_latest_trajectory_csv(results_root: str) -> str:
+    """Find the newest run directory containing uav_trajectory.csv."""
+    if not os.path.isdir(results_root):
+        raise FileNotFoundError(f"Results directory not found: {results_root}")
+
+    ts_pat = re.compile(r"^\d{8}_\d{6}$")
+    candidates: list[tuple[str, str]] = []
+    for name in os.listdir(results_root):
+        run_dir = os.path.join(results_root, name)
+        if not (os.path.isdir(run_dir) and ts_pat.match(name)):
+            continue
+        csv_path = os.path.join(run_dir, "uav_trajectory.csv")
+        if os.path.isfile(csv_path):
+            candidates.append((name, csv_path))
+
+    if not candidates:
+        raise FileNotFoundError(f"No uav_trajectory.csv found under: {results_root}")
+
+    candidates.sort(key=lambda x: x[0])
+    return candidates[-1][1]
+
+
+def _load_trajectories_from_csv(csv_path: str) -> dict[int, np.ndarray]:
+    """Load trajectories grouped by UAV id, sorted by step."""
+    grouped: dict[int, list[tuple[int, float, float]]] = {}
+
+    with open(csv_path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            uid = int(row["uav_id"])
+            step = int(float(row["step"]))
+            x_km = float(row["x_km"])
+            y_km = float(row["y_km"])
+            grouped.setdefault(uid, []).append((step, x_km, y_km))
+
+    trajectories: dict[int, np.ndarray] = {}
+    for uid, recs in grouped.items():
+        recs.sort(key=lambda t: t[0])
+        xy = np.asarray([(r[1], r[2]) for r in recs], dtype=np.float64)
+        trajectories[uid] = xy
+    return trajectories
+
+
+def _intersect_line_with_rect(
+    p0: tuple[float, float],
+    p1: tuple[float, float],
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+) -> tuple[float, float] | None:
+    """Return first intersection point from p0->p1 with rectangle boundary."""
+    x0, y0 = p0
+    x1, y1 = p1
+    dx = x1 - x0
+    dy = y1 - y0
+
+    cands: list[tuple[float, tuple[float, float]]] = []
+
+    def add_t(t: float, x: float, y: float) -> None:
+        if 0.0 <= t <= 1.0 and (x_min - 1e-9) <= x <= (x_max + 1e-9) and (y_min - 1e-9) <= y <= (y_max + 1e-9):
+            cands.append((t, (x, y)))
+
+    if abs(dx) > 1e-12:
+        t = (x_min - x0) / dx
+        add_t(t, x_min, y0 + t * dy)
+        t = (x_max - x0) / dx
+        add_t(t, x_max, y0 + t * dy)
+
+    if abs(dy) > 1e-12:
+        t = (y_min - y0) / dy
+        add_t(t, x0 + t * dx, y_min)
+        t = (y_max - y0) / dy
+        add_t(t, x0 + t * dx, y_max)
+
+    if not cands:
+        return None
+
+    cands.sort(key=lambda z: z[0])
+    return cands[0][1]
+
+
+def _point_inside_rect(x: float, y: float, x_min: float, x_max: float, y_min: float, y_max: float) -> bool:
+    return (x_min <= x <= x_max) and (y_min <= y <= y_max)
+
+
 def _add_path_arrows(ax, path_xy: np.ndarray, color, every_n: int = 70) -> None:
     """沿路径均匀加方向箭头。"""
     if path_xy.shape[0] < 3:
@@ -165,8 +253,12 @@ def plot_figure3_total() -> str:
 
     area_w = particle_w
     area_h = particle_h
-    n_uav = int(cfg.fleet.uav_count)
-    scan_r = float(cfg.motion.uav_scan_radius_km)
+
+    latest_csv = _find_latest_trajectory_csv(cfg.results_root_dir)
+    trajectories = _load_trajectories_from_csv(latest_csv)
+    if not trajectories:
+        raise RuntimeError(f"No trajectory records in: {latest_csv}")
+    n_uav = len(trajectories)
 
     # If the configured base lies inside the search region, shift it outside to show ferry segments clearly.
     base_x = float(cfg.plot.airport_x_km)
@@ -203,31 +295,43 @@ def plot_figure3_total() -> str:
         weight="bold",
     )
 
-    sub_w = area_w / n_uav
-    lane_pitch = max(8.0, 2.0 * scan_r * 0.90)
-
     legend_handles = []
     legend_labels = []
 
-    for uid in range(n_uav):
-        c = colors(uid)
-        x0 = uid * sub_w
-        x1 = (uid + 1) * sub_w
+    for draw_idx, uid in enumerate(sorted(trajectories.keys())):
+        c = colors(draw_idx)
 
-        # Light tint for each sub-region.
-        ax.axvspan(x0, x1, facecolor=c, alpha=0.06, lw=0)
-
-        path_xy = _build_serpentine_path(
-            x_min=x0,
-            x_max=x1,
-            y_min=particle_y_min,
-            y_max=particle_y_max,
-            lane_pitch=lane_pitch,
-        )
+        path_xy = trajectories[uid]
         if path_xy.shape[0] == 0:
             continue
 
-        entry_x, entry_y = float(path_xy[0, 0]), float(path_xy[0, 1])
+        # Entry point: first intersection of base->first recorded point with particle boundary.
+        first_x, first_y = float(path_xy[0, 0]), float(path_xy[0, 1])
+        entry = _intersect_line_with_rect(
+            (base_x, base_y),
+            (first_x, first_y),
+            particle_x_min,
+            particle_x_max,
+            particle_y_min,
+            particle_y_max,
+        )
+
+        # Fallback: if line does not intersect (rare), use first in-bound trajectory sample.
+        if entry is None:
+            inside_idx = None
+            for i in range(path_xy.shape[0]):
+                px, py = float(path_xy[i, 0]), float(path_xy[i, 1])
+                if _point_inside_rect(px, py, particle_x_min, particle_x_max, particle_y_min, particle_y_max):
+                    inside_idx = i
+                    break
+            if inside_idx is None:
+                continue
+            entry_x, entry_y = float(path_xy[inside_idx, 0]), float(path_xy[inside_idx, 1])
+            search_xy = path_xy[inside_idx:]
+        else:
+            entry_x, entry_y = entry
+            # Ensure solid search path starts exactly from boundary entry.
+            search_xy = np.vstack([np.array([[entry_x, entry_y]], dtype=np.float64), path_xy])
 
         # Ferry segment (dashed).
         ferry_line, = ax.plot(
@@ -259,13 +363,15 @@ def plot_figure3_total() -> str:
         )
 
         # Strip-search segment (solid).
-        search_line, = ax.plot(path_xy[:, 0], path_xy[:, 1], linestyle="-", lw=2.0, color=c, zorder=4)
-        _add_path_arrows(ax, path_xy, color=c, every_n=80)
+        search_line, = ax.plot(search_xy[:, 0], search_xy[:, 1], linestyle="-", lw=2.0, color=c, zorder=4)
+        _add_path_arrows(ax, search_xy, color=c, every_n=80)
 
         legend_handles.extend([search_line, ferry_line])
         legend_labels.extend([f"UAV{uid + 1} Strip-Search Segment", f"UAV{uid + 1} Ferry Segment"])
 
-        ax.text((x0 + x1) / 2.0, area_h * 0.52, f"UAV{uid + 1}", color=c, fontsize=12, alpha=0.65, ha="center")
+        x_mid = float(np.median(search_xy[:, 0]))
+        y_mid = float(np.median(search_xy[:, 1]))
+        ax.text(x_mid, y_mid, f"UAV{uid + 1}", color=c, fontsize=12, alpha=0.65, ha="center")
 
     ax.set_aspect("equal", adjustable="box")
     ax.invert_yaxis()  # Positive y points south.

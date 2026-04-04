@@ -1,4 +1,26 @@
 {
     "python.defaultInterpreterPath": "${workspaceFolder}/Monte_Carlo/.venv/bin/python",
-    "python.analysis.typeCheckingMode": "basic"
+    "python.analysis.typeCheckingMode": "basic",
+    "chat.tools.terminal.autoApprove": {
+        "/^source \\.venv/bin/activate && python test_custom_paths\\.py$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^source \\.venv/bin/activate && python -c \"from utils\\.data_manager import DataLogger; from config import build_default_config; cfg = build_default_config\\('\\.'\\); logger = DataLogger\\(cfg\\); print\\('✓ DataLogger initialized'\\); print\\(f'  Trajectory fields: \\{logger\\._get_trajectory_fieldnames\\(\\)\\}'\\)\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^cd /home/alandm1ne/code/Mathematical_Modeling/Monte_Carlo && source \\.venv/bin/activate && python - <<'PY'\nimport os\nfrom config import build_default_config\nfrom core\\.uav_controller import UAVFleetBuilder\n\ncfg = build_default_config\\('\\.'\\)\ncfg\\.uav_fleet_mode\\.mode = 'custom_paths'\ncfg\\.uav_fleet_mode\\.custom_paths_json = 'config_templates/multi_uav_paths\\.json'\nfleet = UAVFleetBuilder\\.from_default_config\\(cfg\\)\nu0 = fleet\\.controllers\\[0\\]\n\nhit = None\npost = \\[\\]\nfor i in range\\(220\\):\n    fleet\\.update_all\\(i \\* cfg\\.simulation\\.dt_h\\)\n    if hit is None and u0\\.position_u == \\(100000, 100000\\):\n        hit = i\n    if hit is not None and len\\(post\\) < 6:\n        post\\.append\\(\\(i, u0\\.position_u, u0\\.is_turning, u0\\.current_segment_idx\\)\\)\n\nprint\\('hit_step', hit\\)\nprint\\('post_samples', post\\)\nPY$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^cd /home/alandm1ne/code/Mathematical_Modeling/Monte_Carlo && source \\.venv/bin/activate && python - <<'PY'\nfrom config import build_default_config\ncfg = build_default_config\\('\\.'\\)\nprint\\(cfg\\.runtime\\.api_demo_enable\\)\nprint\\(cfg\\.uav_fleet_mode\\.strict_path_validation\\)\nPY$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^cd /home/alandm1ne/code/Mathematical_Modeling/Monte_Carlo && source \\.venv/bin/activate && python - <<'PY'\nfrom config import build_default_config\ncfg = build_default_config\\('\\.'\\)\nprint\\(cfg\\.runtime\\.api_demo_enable\\)\nprint\\(cfg\\.runtime\\.api_demo_realtime_visualization\\)\nprint\\(cfg\\.uav_fleet_mode\\.strict_path_validation\\)\nPY$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
 }

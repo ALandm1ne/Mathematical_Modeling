@@ -35,10 +35,26 @@ class FleetConfig:
 
 
 @dataclass
+class UAVFleetModeConfig:
+    """UAV 机群路径规划模式配置。"""
+    mode: str = "auto_strip_scan"              # 模式："auto_strip_scan" 或 "custom_paths"
+    custom_paths_json: str | None = None       # 自定义路径 JSON 文件路径（仅当 mode="custom_paths"）
+    auto_gen_strip_params: dict | None = None  # 条带扫描参数字典（可选覆盖默认值）
+    strict_path_validation: bool = False       # 是否启用强校验：几何/字段不合法直接报错
+
+
+@dataclass
 class RuntimeSwitchesConfig:
-    realtime_visualization: bool = False  # 是否开启实时交互窗口
-    export_simulation_video: bool = True # 是否导出仿真视频（mp4/gif）
-    export_uav_trajectory: bool = True    # 是否导出 UAV 轨迹文件
+    """运行开关与演示模式配置。"""
+    realtime_visualization: bool = True                # 是否开启实时交互窗口
+    export_simulation_video: bool = True               # 是否导出仿真视频（mp4/gif）
+    export_uav_trajectory: bool = True                 # 是否导出 UAV 轨迹文件
+
+    # API 演示模式：用于快速验证自定义路径、可视化和导出流程。
+    api_demo_enable: bool = False                      # 是否启用 API 演示模式（main 自动切到自定义路径）
+    api_demo_realtime_visualization: bool = True       # 演示模式下是否默认打开实时窗口
+    api_demo_steps: int = 4000                         # 演示模式最大步数
+    api_demo_json_path: str = "config_templates/multi_uav_paths.json"  # 演示模式路径 JSON（相对 script_dir）
 
 
 @dataclass
@@ -76,29 +92,6 @@ class FigureConfig:
     summary_fig_size: tuple = (12, 6)  # 收敛曲线图尺寸（英寸）
     debug_text_x: float = 0.02         # 状态文本在画布中的 x 位置（0-1）
     debug_text_y: float = 0.075        # 状态文本在画布中的 y 位置（0-1）
-
-
-@dataclass
-class SnapshotConfig:
-    enable: bool = True                               # 是否开启状态快照
-    sample_times_h: tuple = (0.0, 5.0, 10.0, 15.0)   # 固定采样时刻（小时）
-    include_terminal_snapshot: bool = True            # 结束时是否补终态快照
-    output_filename_npz: str = "state_snapshots.npz"  # 快照矩阵输出文件
-
-
-@dataclass
-class PlotConfig:
-    output_subdir_name: str = "plots"  # 每次 run 的绘图输出子目录
-    dpi: int = 300                      # 论文级导出 DPI
-    airport_x_km: float = 153.0         # 温州机场 x 坐标（相对仿真区域，km）
-    airport_y_km: float = 222.0         # 温州机场 y 坐标（相对仿真区域，km）
-    airport_label: str = "Wenzhou Airport"
-
-
-@dataclass
-class AnalysisConfig:
-    batch_all_runs: bool = True                     # 后处理默认扫描所有 run
-    summary_subdir_name: str = "_analysis_summary"  # 跨 run 汇总目录
 
 
 @dataclass
@@ -151,15 +144,13 @@ class AppConfig:
     environment: EnvironmentConfig                   # 区域参数
     motion: MotionConfig                             # 运动参数
     fleet: FleetConfig                               # 机群参数
+    uav_fleet_mode: UAVFleetModeConfig              # UAV 路径规划模式配置
     runtime: RuntimeSwitchesConfig                  # 运行时功能开关
     refresh: RefreshPolicyConfig                    # 刷新策略
     export: ExportConfig                             # 数据导出策略
     video: VideoConfig                               # 视频导出策略
     memory: MemoryMonitorConfig                      # 内存监控策略
     figure: FigureConfig                             # 图形尺寸与布局参数
-    snapshot: SnapshotConfig                         # 状态快照策略
-    plot: PlotConfig                                 # 后处理绘图策略
-    analysis: AnalysisConfig                         # 后处理批处理策略
     paths: PathConfig                                # 路径策略
     numeric: NumericCoreConfig                       # 数值核心参数（定点缩放等）
     debug: DebugFlagsConfig                          # 调试/性能开关
@@ -213,10 +204,6 @@ class AppConfig:
             raise ValueError("uav_count must be > 0")
         if self.fleet.start_spacing_scan_diameters <= 0:
             raise ValueError("start_spacing_scan_diameters must be > 0")
-        if self.plot.dpi <= 0:
-            raise ValueError("plot.dpi must be > 0")
-        if len(self.snapshot.sample_times_h) == 0:
-            raise ValueError("snapshot.sample_times_h must not be empty")
         if self.export.trajectory_export_format.lower() not in {"csv", "parquet", "both"}:
             raise ValueError("trajectory_export_format must be one of csv/parquet/both")
 
@@ -235,29 +222,25 @@ class AppConfig:
         self.device_runtime = DeviceRuntime(device=device, gpu_name=gpu_name)
 
 
-def build_default_config(script_dir: str, require_cuda_override: bool | None = None) -> AppConfig:
+def build_default_config(script_dir: str) -> AppConfig:
     """构建默认配置并完成：派生计算 + 校验 + 设备配置。"""
     cfg = AppConfig(
         simulation=SimulationTuningConfig(),
         environment=EnvironmentConfig(),
         motion=MotionConfig(),
         fleet=FleetConfig(),
+        uav_fleet_mode=UAVFleetModeConfig(),
         runtime=RuntimeSwitchesConfig(),
         refresh=RefreshPolicyConfig(),
         export=ExportConfig(),
         video=VideoConfig(),
         memory=MemoryMonitorConfig(),
         figure=FigureConfig(),
-        snapshot=SnapshotConfig(),
-        plot=PlotConfig(),
-        analysis=AnalysisConfig(),
         paths=PathConfig(script_dir=script_dir),
         numeric=NumericCoreConfig(),
         debug=DebugFlagsConfig(),
         device_policy=DevicePolicyConfig(),
     )
-    if require_cuda_override is not None:
-        cfg.device_policy.require_cuda = bool(require_cuda_override)
     cfg.recompute_derived()
     cfg.validate()
     cfg.configure_device()

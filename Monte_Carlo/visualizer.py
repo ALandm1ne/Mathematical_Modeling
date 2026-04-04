@@ -162,7 +162,15 @@ class SimVisualizer:
             uav = fleet_controller.controllers[i]
             x_km, y_km = uav.position_km()
             state_tag = "A" if fleet_controller.active_flags[i] else "E"
-            status_lines.append(f"#{i}[{state_tag}] ({x_km:.1f}, {y_km:.1f}) km {uav.angle_deg():.0f} deg")
+            started_tag = "S" if getattr(uav, "is_started", True) else "W"
+            turning_tag = "T" if getattr(uav, "is_turning", False) else "-"
+            seg_idx = int(getattr(uav, "current_segment_idx", 0))
+            mode_tag = str(getattr(uav, "auto_gen_type", "unknown"))
+            status_lines.append(
+                f"#{i}[{state_tag}{started_tag}{turning_tag}] "
+                f"seg={seg_idx} mode={mode_tag} "
+                f"({x_km:.1f}, {y_km:.1f}) km {uav.angle_deg():.0f} deg"
+            )
 
         self.status_text.set_text(
             "\n".join(status_lines)

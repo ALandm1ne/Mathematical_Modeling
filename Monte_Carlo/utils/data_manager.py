@@ -31,6 +31,10 @@ class DataLogger:
             "angle_deg": [],
             "is_turning": [],
             "remaining_particles": [],
+            # 新增字段：路径规划相关
+            "current_segment_idx": [],
+            "is_on_custom_path": [],
+            "auto_gen_type": [],
         }
         self.uav_traj_x_km_by_id: dict[int, list[float]] = {}
         self.uav_traj_y_km_by_id: dict[int, list[float]] = {}
@@ -80,6 +84,10 @@ class DataLogger:
             self.uav_step_trace["angle_deg"].append(uav.angle_deg())
             self.uav_step_trace["is_turning"].append(bool(uav.is_turning))
             self.uav_step_trace["remaining_particles"].append(int(remaining_particles))
+            # 记录新增的路径规划字段
+            self.uav_step_trace["current_segment_idx"].append(int(uav.current_segment_idx))
+            self.uav_step_trace["is_on_custom_path"].append(bool(uav.segments and uav.auto_gen_type != "strip_scan"))
+            self.uav_step_trace["auto_gen_type"].append(str(uav.auto_gen_type) if uav.auto_gen_type else "unknown")
 
             if uav_id not in self.uav_traj_x_km_by_id:
                 self.uav_traj_x_km_by_id[uav_id] = []
@@ -90,9 +98,10 @@ class DataLogger:
     def _get_trajectory_fieldnames(self):
         """按配置返回导出字段集合（基础字段 / 扩展字段）。"""
         base_fields = ["step", "time_h", "uav_id", "is_active", "x_km", "y_km"]
+        extended_fields = ["angle_deg", "is_turning", "remaining_particles", "current_segment_idx", "is_on_custom_path", "auto_gen_type"]
         if not self.cfg.export.trajectory_include_extended:
             return base_fields
-        return base_fields + ["angle_deg", "is_turning", "remaining_particles"]
+        return base_fields + extended_fields
 
     def export_uav_trace(self) -> None:
         """根据配置导出 UAV 轨迹到 CSV/Parquet。"""
@@ -131,18 +140,8 @@ class DataLogger:
             writer.writeheader()
             n_rows = len(self.uav_step_trace["step"])
             for i in range(n_rows):
-                row = {
-                    "step": self.uav_step_trace["step"][i],
-                    "time_h": self.uav_step_trace["time_h"][i],
-                    "uav_id": self.uav_step_trace["uav_id"][i],
-                    "is_active": self.uav_step_trace["is_active"][i],
-                    "x_km": self.uav_step_trace["x_km"][i],
-                    "y_km": self.uav_step_trace["y_km"][i],
-                    "angle_deg": self.uav_step_trace["angle_deg"][i],
-                    "is_turning": self.uav_step_trace["is_turning"][i],
-                    "remaining_particles": self.uav_step_trace["remaining_particles"][i],
-                }
-                writer.writerow({k: row[k] for k in fieldnames})
+                row = {k: self.uav_step_trace[k][i] for k in fieldnames}
+                writer.writerow(row)
 
         file_size = os.path.getsize(path)
         print(f"UAV trajectory exported: {path} ({n_rows} rows, {file_size} bytes)")

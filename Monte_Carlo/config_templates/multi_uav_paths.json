@@ -1,0 +1,80 @@
+[
+  {
+    "_comment": "UAV#0: 0小时起飞，从(20000, 0)出发；先直线到第1个目标点，再执行一次顺时针圆弧转弯，最后到终点。",
+    "uav_id": 0,
+    "start_time_h": 0.0,
+    "start_pos_u": [20000, 0],
+    "segments": [
+      {
+        "_comment": "第1段：直线到达(100000, 100000)，随后执行圆弧转弯。",
+        "end_point_u": [100000, 100000],
+        "arc_turn": {
+          "_comment": "圆弧参数：半径15000u，起点/终点固定为本次转弯的几何边界，顺时针。",
+          "radius_u": 15000,
+          "start_point_u": [100000, 100000],
+          "end_point_u": [150000, 100000],
+          "center_u": null,
+          "is_clockwise": true
+        }
+      },
+      {
+        "_comment": "第2段：直线飞行到最终终止点。",
+        "end_point_u": [200000, 200000],
+        "arc_turn": null
+      }
+    ],
+    "auto_gen_type": "custom"
+  },
+  {
+    "_comment": "UAV#1: 2.5小时后起飞，从(50000, 0)出发；先直线+逆时针圆弧，再直线到终点。",
+    "uav_id": 1,
+    "start_time_h": 2.5,
+    "start_pos_u": [50000, 0],
+    "segments": [
+      {
+        "_comment": "第1段：直线到达(120000, 120000)，随后执行圆弧转弯。",
+        "end_point_u": [120000, 120000],
+        "arc_turn": {
+          "_comment": "圆弧参数：半径20000u，逆时针转弯。",
+          "radius_u": 20000,
+          "start_point_u": [120000, 120000],
+          "end_point_u": [170000, 120000],
+          "center_u": null,
+          "is_clockwise": false
+        }
+      },
+      {
+        "_comment": "第2段：直线飞行到最终终止点。",
+        "end_point_u": [220000, 220000],
+        "arc_turn": null
+      }
+    ],
+    "auto_gen_type": "custom"
+  },
+  {
+    "_comment": "UAV#2: 5小时后起飞，从(80000, 0)出发；第一段直线，第二段末尾执行顺时针圆弧。",
+    "uav_id": 2,
+    "start_time_h": 5.0,
+    "start_pos_u": [80000, 0],
+    "segments": [
+      {
+        "_comment": "第1段：纯直线到达(150000, 150000)。",
+        "end_point_u": [150000, 150000],
+        "arc_turn": null
+      },
+      {
+        "_comment": "第2段：直线到达(250000, 250000)后执行圆弧转弯。",
+        "end_point_u": [250000, 250000],
+        "arc_turn": {
+          "_comment": "圆弧参数：半径25000u，顺时针。",
+          "radius_u": 25000,
+          "start_point_u": [250000, 250000],
+          "end_point_u": [300000, 250000],
+          "center_u": null,
+          "is_clockwise": true
+        }
+      }
+    ],
+    "auto_gen_type": "custom"
+  }
+]

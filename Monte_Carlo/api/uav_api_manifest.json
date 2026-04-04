@@ -1,0 +1,115 @@
+{
+  "version": "1.0",
+  "module": "core.uav_controller",
+  "purpose": "Machine-readable API manifest for agent-driven UAV route orchestration.",
+  "coordinate_unit": "u",
+  "time_unit": "hour",
+  "public_symbols": [
+    "ArcTurnSpec",
+    "SegmentSpec",
+    "UAVPathSpec",
+    "UAVPathGenerator",
+    "UAVFleetBuilder",
+    "UAVFleetController"
+  ],
+  "data_contracts": {
+    "ArcTurnSpec": {
+      "type": "dataclass",
+      "fields": {
+        "radius_u": {"type": "float", "required": true},
+        "start_point_u": {"type": "tuple[float,float]", "required": true},
+        "end_point_u": {"type": "tuple[float,float]", "required": true},
+        "center_u": {"type": "tuple[float,float]|null", "required": false, "default": null},
+        "is_clockwise": {"type": "bool", "required": false, "default": true}
+      }
+    },
+    "SegmentSpec": {
+      "type": "typed_dict",
+      "fields": {
+        "end_point_u": {"type": "tuple[int,int]", "required": true},
+        "arc_turn": {"type": "ArcTurnSpec|null", "required": true}
+      }
+    },
+    "UAVPathSpec": {
+      "type": "dataclass",
+      "fields": {
+        "uav_id": {"type": "int", "required": true},
+        "start_time_h": {"type": "float", "required": true},
+        "start_pos_u": {"type": "tuple[int,int]", "required": true},
+        "segments": {"type": "list[SegmentSpec]", "required": true},
+        "auto_gen_type": {"type": "str|null", "required": false, "default": null}
+      }
+    }
+  },
+  "api_methods": [
+    {
+      "class": "UAVPathGenerator",
+      "name": "generate_strip_scan_paths",
+      "signature": "(cfg) -> list[UAVPathSpec]",
+      "side_effects": "none",
+      "io": "no file io"
+    },
+    {
+      "class": "UAVPathGenerator",
+      "name": "load_custom_paths_from_json",
+      "signature": "(filepath: str) -> list[UAVPathSpec]",
+      "side_effects": "none",
+      "io": "read json file"
+    },
+    {
+      "class": "UAVFleetBuilder",
+      "name": "from_default_config",
+      "signature": "(cfg) -> UAVFleetController",
+      "side_effects": "uses cfg.uav_fleet_mode.mode",
+      "io": "depends on mode"
+    },
+    {
+      "class": "UAVFleetBuilder",
+      "name": "from_strip_scan",
+      "signature": "(cfg, override_params: dict | None = None) -> UAVFleetController",
+      "supported_override_keys": ["uav_count", "start_spacing_scan_diameters"],
+      "side_effects": "temporary cfg override; restored in finally"
+    },
+    {
+      "class": "UAVFleetBuilder",
+      "name": "from_custom_json",
+      "signature": "(cfg, json_filepath: str) -> UAVFleetController",
+      "side_effects": "sets cfg.uav_fleet_mode.mode/custom_paths_json"
+    },
+    {
+      "class": "UAVFleetBuilder",
+      "name": "from_path_specs",
+      "signature": "(cfg, path_specs: list[UAVPathSpec]) -> UAVFleetController",
+      "side_effects": "none on files; builds controller objects in-memory"
+    }
+  ],
+  "agent_recommendations": {
+    "fastest_path": "UAVFleetBuilder.from_path_specs",
+    "file_driven_path": "UAVFleetBuilder.from_custom_json",
+    "compatibility_path": "UAVFleetBuilder.from_default_config"
+  },
+  "minimal_examples": {
+    "from_path_specs": {
+      "path_specs": [
+        {
+          "uav_id": 0,
+          "start_time_h": 0.0,
+          "start_pos_u": [20000, 0],
+          "segments": [
+            {
+              "end_point_u": [100000, 100000],
+              "arc_turn": {
+                "radius_u": 12000,
+                "start_point_u": [100000, 100000],
+                "end_point_u": [130000, 100000],
+                "center_u": null,
+                "is_clockwise": true
+              }
+            }
+          ],
+          "auto_gen_type": "custom"
+        }
+      ]
+    }
+  }
+}
