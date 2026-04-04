@@ -63,19 +63,9 @@ class SimVisualizer:
             vmax=fixed_vmax,
         )
         self.window.figure.colorbar(self.im, ax=self.window, label="Particle Density (particles/grid)")
-        cmap = self.plt.cm.get_cmap("tab10", max(1, self.cfg.fleet.uav_count))
-        for i in range(self.cfg.fleet.uav_count):
-            color = cmap(i)
-            (dot,) = self.window.plot([], [], marker="o", markersize=3, color=color, linestyle="None", label=f"UAV#{i}")
-            (path,) = self.window.plot([], [], color=color, linewidth=1.2, alpha=0.9, label=f"Path#{i}")
-            self.uav_dots.append(dot)
-            self.uav_paths.append(path)
-
         self.window.set_title("CUDA Particle Density (Interval Refresh)")
         self.window.set_xlabel("X (km)")
         self.window.set_ylabel("Y (km)")
-        if self.cfg.fleet.uav_count <= 8:
-            self.window.legend()
 
         self.status_text = self.fig.text(
             self.cfg.figure.debug_text_x,
@@ -114,6 +104,22 @@ class SimVisualizer:
             self.video_writer.setup(self.fig, self.video_output_path, dpi=self.effective_video_dpi)
             print(f"Video export enabled: {self.video_output_path}")
 
+    def _ensure_uav_artists(self, required_count: int) -> None:
+        """确保 UAV 点与轨迹线数量不小于 required_count。"""
+        if self.window is None:
+            return
+        if required_count <= len(self.uav_dots):
+            return
+        cmap = self.plt.cm.get_cmap("tab10", max(1, required_count))
+        for i in range(len(self.uav_dots), required_count):
+            color = cmap(i)
+            (dot,) = self.window.plot([], [], marker="o", markersize=3, color=color, linestyle="None", label=f"UAV#{i}")
+            (path,) = self.window.plot([], [], color="black", linewidth=0.8, alpha=0.95, label=f"Path#{i}")
+            self.uav_dots.append(dot)
+            self.uav_paths.append(path)
+        if required_count <= 8:
+            self.window.legend()
+
     def update(self, particle_system, fleet_controller, data_logger, elapsed_h: float, remaining_particles: int) -> None:
         """刷新一帧：密度图、UAV 位置/轨迹、状态文本、视频帧。"""
         if not self.cfg.enable_visual_output:
@@ -125,6 +131,7 @@ class SimVisualizer:
         # 该调用包含 GPU->CPU 回传，是可视化路径中的主要开销点。
         density_matrix = particle_system.get_counts_in_grids()
         self.im.set_data(density_matrix)
+        self._ensure_uav_artists(len(fleet_controller.controllers))
 
         for i, uav in enumerate(fleet_controller.controllers):
             if i >= len(self.uav_dots):

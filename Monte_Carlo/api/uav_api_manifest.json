@@ -1,5 +1,5 @@
 {
-  "version": "1.0",
+  "version": "1.2",
   "module": "core.uav_controller",
   "purpose": "Machine-readable API manifest for agent-driven UAV route orchestration.",
   "coordinate_unit": "u",
@@ -16,19 +16,37 @@
     "ArcTurnSpec": {
       "type": "dataclass",
       "fields": {
-        "radius_u": {"type": "float", "required": true},
         "start_point_u": {"type": "tuple[float,float]", "required": true},
-        "end_point_u": {"type": "tuple[float,float]", "required": true},
-        "center_u": {"type": "tuple[float,float]|null", "required": false, "default": null},
-        "is_clockwise": {"type": "bool", "required": false, "default": true}
-      }
+        "radius_u": {"type": "float", "required": true},
+        "is_clockwise": {"type": "bool", "required": true},
+        "rotation_angle_deg": {"type": "float", "required": true}
+      },
+      "incompatible_legacy_fields": [
+        "end_point_u",
+        "center_u"
+      ]
     },
     "SegmentSpec": {
-      "type": "typed_dict",
-      "fields": {
-        "end_point_u": {"type": "tuple[int,int]", "required": true},
-        "arc_turn": {"type": "ArcTurnSpec|null", "required": true}
-      }
+      "type": "typed_union",
+      "variants": [
+        {
+          "segment_type": "line",
+          "fields": {
+            "segment_type": {"type": "literal['line']", "required": true},
+            "end_point_u": {"type": "tuple[int,int]", "required": true}
+          }
+        },
+        {
+          "segment_type": "arc",
+          "fields": {
+            "segment_type": {"type": "literal['arc']", "required": true},
+            "arc": {"type": "ArcTurnSpec", "required": true}
+          }
+        }
+      ],
+      "incompatible_legacy_keys": [
+        "arc_turn"
+      ]
     },
     "UAVPathSpec": {
       "type": "dataclass",
@@ -46,8 +64,8 @@
       "class": "UAVPathGenerator",
       "name": "generate_strip_scan_paths",
       "signature": "(cfg) -> list[UAVPathSpec]",
-      "side_effects": "none",
-      "io": "no file io"
+      "availability": "removed",
+      "replacement": "UAVFleetBuilder.from_custom_json / UAVFleetBuilder.from_path_specs"
     },
     {
       "class": "UAVPathGenerator",
@@ -60,21 +78,21 @@
       "class": "UAVFleetBuilder",
       "name": "from_default_config",
       "signature": "(cfg) -> UAVFleetController",
-      "side_effects": "uses cfg.uav_fleet_mode.mode",
-      "io": "depends on mode"
+      "availability": "removed",
+      "replacement": "from_custom_json(cfg, json_filepath)"
     },
     {
       "class": "UAVFleetBuilder",
       "name": "from_strip_scan",
       "signature": "(cfg, override_params: dict | None = None) -> UAVFleetController",
-      "supported_override_keys": ["uav_count", "start_spacing_scan_diameters"],
-      "side_effects": "temporary cfg override; restored in finally"
+      "availability": "removed",
+      "replacement": "from_custom_json(cfg, json_filepath) / from_path_specs(cfg, path_specs)"
     },
     {
       "class": "UAVFleetBuilder",
       "name": "from_custom_json",
       "signature": "(cfg, json_filepath: str) -> UAVFleetController",
-      "side_effects": "sets cfg.uav_fleet_mode.mode/custom_paths_json"
+      "side_effects": "sets cfg.uav_fleet_mode.custom_paths_json"
     },
     {
       "class": "UAVFleetBuilder",
@@ -86,7 +104,7 @@
   "agent_recommendations": {
     "fastest_path": "UAVFleetBuilder.from_path_specs",
     "file_driven_path": "UAVFleetBuilder.from_custom_json",
-    "compatibility_path": "UAVFleetBuilder.from_default_config"
+    "compatibility_path": null
   },
   "minimal_examples": {
     "from_path_specs": {
@@ -97,13 +115,16 @@
           "start_pos_u": [20000, 0],
           "segments": [
             {
-              "end_point_u": [100000, 100000],
-              "arc_turn": {
-                "radius_u": 12000,
+              "segment_type": "line",
+              "end_point_u": [100000, 100000]
+            },
+            {
+              "segment_type": "arc",
+              "arc": {
                 "start_point_u": [100000, 100000],
-                "end_point_u": [130000, 100000],
-                "center_u": null,
-                "is_clockwise": true
+                "radius_u": 12000,
+                "is_clockwise": true,
+                "rotation_angle_deg": 90
               }
             }
           ],

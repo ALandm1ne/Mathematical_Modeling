@@ -1,4 +1,4 @@
-"""UAV 控制器：负责条带扫描状态机与转向几何。
+"""UAV 控制器：负责外置路径驱动下的分段运动学。
 
 Agent-Oriented API Notes:
 - This module exposes stable external APIs via UAVFleetBuilder.
@@ -9,7 +9,7 @@ Agent-Oriented API Notes:
 import json
 import math
 from dataclasses import dataclass
-from typing import Optional, TypedDict
+from typing import Literal, Optional, TypedDict
 
 import numpy as np
 
@@ -23,131 +23,246 @@ __all__ = [
     "UAVFleetBuilder",
 ]
 
+_POINT_TOL_U = 1e-6
+_ANGLE_TOL_RAD = 1e-12
 
-class SegmentSpec(TypedDict):
-    """Single path segment contract for agents.
+_COMMON_ANGLE_DEG_TO_RAD = {
+    0: 0.0,
+    15: math.pi / 12.0,
+    30: math.pi / 6.0,
+    45: math.pi / 4.0,
+    60: math.pi / 3.0,
+    75: 5.0 * math.pi / 12.0,
+    90: math.pi / 2.0,
+    105: 7.0 * math.pi / 12.0,
+    120: 2.0 * math.pi / 3.0,
+    135: 3.0 * math.pi / 4.0,
+    150: 5.0 * math.pi / 6.0,
+    165: 11.0 * math.pi / 12.0,
+    180: math.pi,
+    195: 13.0 * math.pi / 12.0,
+    210: 7.0 * math.pi / 6.0,
+    225: 5.0 * math.pi / 4.0,
+    240: 4.0 * math.pi / 3.0,
+    255: 17.0 * math.pi / 12.0,
+    270: 3.0 * math.pi / 2.0,
+    285: 19.0 * math.pi / 12.0,
+    300: 5.0 * math.pi / 3.0,
+    315: 7.0 * math.pi / 4.0,
+    330: 11.0 * math.pi / 6.0,
+    345: 23.0 * math.pi / 12.0,
+}
 
-    Keys:
-        end_point_u: tuple[int, int]
-        arc_turn: ArcTurnSpec | None
-    """
 
+class LineSegmentSpec(TypedDict):
+    """直线段：从当前点飞到 end_point_u。"""
+
+    segment_type: Literal["line"]
     end_point_u: tuple[int, int]
-    arc_turn: "ArcTurnSpec | None"
 
 
 @dataclass
 class ArcTurnSpec:
-    """Arc-turn contract used by custom-path mode.
+    """圆弧段：由起点、半径、方向、旋转角度定义。"""
 
-    External callers can fully control turn geometry with this object.
-    """
-    radius_u: float                           # 转弯半径（单位 u）
-    start_point_u: tuple[float, float]        # 圆弧起点
-    end_point_u: tuple[float, float]          # 圆弧终点
-    center_u: Optional[tuple[float, float]] = None  # 圆心（可自动计算或外部指定）
-    is_clockwise: bool = True                 # 转弯方向（顺时针/逆时针）
+    start_point_u: tuple[float, float]
+    radius_u: float
+    is_clockwise: bool
+    rotation_angle_deg: float
+
+
+class ArcSegmentSpec(TypedDict):
+    """圆弧段：由 arc 定义独立段。"""
+
+    segment_type: Literal["arc"]
+    arc: ArcTurnSpec
+
+
+SegmentSpec = LineSegmentSpec | ArcSegmentSpec
 
 
 @dataclass
 class UAVPathSpec:
     """Full per-UAV path contract used by UAVFleetBuilder.from_path_specs."""
-    uav_id: int                               # UAV 编号
-    start_time_h: float                       # 绝对出发时间（小时）
-    start_pos_u: tuple[int, int]              # 起始位置 (x, y)，单位 u
-    segments: list[SegmentSpec]               # 路径段列表
-    auto_gen_type: Optional[str] = None       # 可选标记，源自自动生成（如 "strip_scan"）
+
+    uav_id: int
+    start_time_h: float
+    start_pos_u: tuple[int, int]
+    segments: list[SegmentSpec]
+    auto_gen_type: Optional[str] = None
 
 
 class UAVPathGenerator:
-    """Path-spec factory for agent-driven orchestration.
-
-    Public methods in this class are pure constructors/parsers and do not
-    mutate simulation runtime state.
-    """
+    """Path-spec factory for agent-driven orchestration."""
 
     @staticmethod
     def generate_strip_scan_paths(cfg) -> list[UAVPathSpec]:
-        """Generate default strip-scan paths from cfg.
+        """Legacy API removed: strip-scan paths are no longer supported."""
 
-        Args:
-            cfg: Application config with fleet and derived fields.
+        raise NotImplementedError(
+            "generate_strip_scan_paths() has been removed. "
+            "Please use external paths via from_custom_json() or from_path_specs()."
+        )
 
-        Returns:
-            list[UAVPathSpec]: One path spec per UAV.
-        """
-        d = cfg.derived
-        path_specs: list[UAVPathSpec] = []
+    @staticmethod
+    def _normalize_angle_0_2pi(angle_rad: float) -> float:
+        angle = angle_rad % (2.0 * math.pi)
+        if angle < 0:
+            angle += 2.0 * math.pi
+        return angle
 
-        # 计算起始间距（与现有逻辑一致）
-        spacing_u = max(1, int(round(cfg.fleet.start_spacing_scan_diameters * 2 * d.uav_scan_radius_u)))
-        base_x = d.uav_scan_radius_u
-        y0 = 0
+    @staticmethod
+    def _deg_to_rad_stable(angle_deg: float) -> float:
+        """稳定角度换算：常见角优先精确映射，其他走 radians。"""
 
-        for i in range(cfg.fleet.uav_count):
-            x = base_x + i * spacing_u
-            x_clamped = max(0, min(d.area_width_u, x))
+        if not math.isfinite(angle_deg):
+            raise ValueError("rotation_angle_deg must be finite")
+        if abs(angle_deg) <= 1e-12:
+            return 0.0
 
-            # 条带扫描模式：单个段，目标点为区域右上角，无圆弧转弯（由 UAVController.update() 自动管理）
-            spec = UAVPathSpec(
-                uav_id=i,
-                start_time_h=0.0,
-                start_pos_u=(int(x_clamped), int(y0)),
-                segments=[
-                    {
-                        "end_point_u": (d.area_width_u, d.area_height_u),
-                        "arc_turn": None,  # 条带扫描不指定圆弧，由 update() 自动管理
-                    }
-                ],
-                auto_gen_type="strip_scan",
-            )
-            path_specs.append(spec)
+        rounded = round(angle_deg)
+        if abs(angle_deg - rounded) <= 1e-12:
+            full_turns = int(rounded // 360)
+            rem = int(rounded % 360)
+            if rem in _COMMON_ANGLE_DEG_TO_RAD:
+                return full_turns * (2.0 * math.pi) + _COMMON_ANGLE_DEG_TO_RAD[rem]
 
-        return path_specs
+        return math.radians(angle_deg)
+
+    @staticmethod
+    def _distance_u(p1: tuple[float, float], p2: tuple[float, float]) -> float:
+        return math.hypot(float(p1[0]) - float(p2[0]), float(p1[1]) - float(p2[1]))
+
+    @staticmethod
+    def _parse_point2(name: str, value) -> tuple[float, float]:
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            raise ValueError(f"{name} must be a 2D point")
+        x = float(value[0])
+        y = float(value[1])
+        if not (math.isfinite(x) and math.isfinite(y)):
+            raise ValueError(f"{name} must contain finite values")
+        return (x, y)
+
+    @staticmethod
+    def _build_arc_center_from_heading(
+        start_point_u: tuple[float, float],
+        start_heading_rad: float,
+        radius_u: float,
+        is_clockwise: bool,
+    ) -> tuple[float, float]:
+        hx = math.cos(start_heading_rad)
+        hy = math.sin(start_heading_rad)
+        if is_clockwise:
+            nx, ny = hy, -hx
+        else:
+            nx, ny = -hy, hx
+        return (start_point_u[0] + nx * radius_u, start_point_u[1] + ny * radius_u)
+
+    @staticmethod
+    def _compute_arc_end_from_state(
+        start_point_u: tuple[float, float],
+        start_heading_rad: float,
+        arc_spec: ArcTurnSpec,
+    ) -> tuple[tuple[float, float], float]:
+        total_abs = UAVPathGenerator._deg_to_rad_stable(float(arc_spec.rotation_angle_deg))
+        if total_abs <= _ANGLE_TOL_RAD:
+            return start_point_u, UAVPathGenerator._normalize_angle_0_2pi(start_heading_rad)
+
+        signed = -total_abs if arc_spec.is_clockwise else total_abs
+        center_u = UAVPathGenerator._build_arc_center_from_heading(
+            start_point_u,
+            start_heading_rad,
+            float(arc_spec.radius_u),
+            bool(arc_spec.is_clockwise),
+        )
+        start_radial = math.atan2(
+            float(start_point_u[1]) - float(center_u[1]),
+            float(start_point_u[0]) - float(center_u[0]),
+        )
+        end_radial = start_radial + signed
+        end_point = (
+            float(center_u[0]) + float(arc_spec.radius_u) * math.cos(end_radial),
+            float(center_u[1]) + float(arc_spec.radius_u) * math.sin(end_radial),
+        )
+        end_heading = UAVPathGenerator._normalize_angle_0_2pi(start_heading_rad + signed)
+        return end_point, end_heading
+
+    @staticmethod
+    def _migration_error_message() -> str:
+        return (
+            "Legacy arc schema is not compatible anymore. "
+            "Detected old key `arc_turn` (or arc end/center fields). "
+            "Please migrate segment to: "
+            "{'segment_type':'arc','arc':{'start_point_u':[x,y],'radius_u':r,'is_clockwise':true,'rotation_angle_deg':90}}"
+        )
 
     @staticmethod
     def load_custom_paths_from_json(filepath: str) -> list[UAVPathSpec]:
-        """Load custom path specs from JSON file.
+        """Load custom path specs from JSON file (new typed segment schema)."""
 
-        Args:
-            filepath: Path to UTF-8 JSON array of UAVPathSpec-like objects.
-
-        Returns:
-            list[UAVPathSpec]
-
-        Raises:
-            FileNotFoundError: If filepath is invalid.
-            KeyError/TypeError: If required keys or value types are invalid.
-        """
         with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
 
+        if not isinstance(data, list):
+            raise ValueError("custom path JSON root must be a list")
+
         path_specs: list[UAVPathSpec] = []
-        for item in data:
-            # 转换 arc_turn 字段为 ArcTurnSpec 对象
-            segments = []
-            for seg in item.get("segments", []):
-                arc_turn_data = seg.get("arc_turn")
-                arc_turn = None
-                if arc_turn_data is not None:
-                    arc_turn = ArcTurnSpec(
-                        radius_u=arc_turn_data["radius_u"],
-                        start_point_u=tuple(arc_turn_data["start_point_u"]),
-                        end_point_u=tuple(arc_turn_data["end_point_u"]),
-                        center_u=tuple(arc_turn_data["center_u"]) if arc_turn_data.get("center_u") else None,
-                        is_clockwise=arc_turn_data.get("is_clockwise", True),
+        for item_idx, item in enumerate(data):
+            if not isinstance(item, dict):
+                raise ValueError(f"json[{item_idx}] must be an object")
+            raw_segments = item.get("segments", [])
+            if not isinstance(raw_segments, list):
+                raise ValueError(f"json[{item_idx}].segments must be a list")
+
+            segments: list[SegmentSpec] = []
+            for seg_idx, seg in enumerate(raw_segments):
+                if not isinstance(seg, dict):
+                    raise ValueError(f"json[{item_idx}].segments[{seg_idx}] must be an object")
+                if "arc_turn" in seg:
+                    raise ValueError(UAVPathGenerator._migration_error_message())
+
+                seg_type = seg.get("segment_type")
+                if seg_type == "line":
+                    end_point = UAVPathGenerator._parse_point2(
+                        f"json[{item_idx}].segments[{seg_idx}].end_point_u",
+                        seg.get("end_point_u"),
                     )
-                segments.append(
-                    {
-                        "end_point_u": tuple(seg["end_point_u"]),
-                        "arc_turn": arc_turn,
-                    }
+                    segments.append(
+                        {
+                            "segment_type": "line",
+                            "end_point_u": (int(round(end_point[0])), int(round(end_point[1]))),
+                        }
+                    )
+                    continue
+
+                if seg_type == "arc":
+                    arc_raw = seg.get("arc")
+                    if not isinstance(arc_raw, dict):
+                        raise ValueError(f"json[{item_idx}].segments[{seg_idx}].arc must be object")
+                    if "end_point_u" in arc_raw or "center_u" in arc_raw:
+                        raise ValueError(UAVPathGenerator._migration_error_message())
+
+                    start_point = UAVPathGenerator._parse_point2(
+                        f"json[{item_idx}].segments[{seg_idx}].arc.start_point_u",
+                        arc_raw.get("start_point_u"),
+                    )
+                    arc = ArcTurnSpec(
+                        start_point_u=start_point,
+                        radius_u=float(arc_raw["radius_u"]),
+                        is_clockwise=bool(arc_raw.get("is_clockwise", True)),
+                        rotation_angle_deg=float(arc_raw["rotation_angle_deg"]),
+                    )
+                    segments.append({"segment_type": "arc", "arc": arc})
+                    continue
+
+                raise ValueError(
+                    f"json[{item_idx}].segments[{seg_idx}].segment_type must be 'line' or 'arc'"
                 )
 
             spec = UAVPathSpec(
-                uav_id=item["uav_id"],
-                start_time_h=item.get("start_time_h", 0.0),
-                start_pos_u=tuple(item["start_pos_u"]),
+                uav_id=int(item["uav_id"]),
+                start_time_h=float(item.get("start_time_h", 0.0)),
+                start_pos_u=tuple(int(v) for v in item["start_pos_u"]),
                 segments=segments,
                 auto_gen_type=item.get("auto_gen_type"),
             )
@@ -157,64 +272,90 @@ class UAVPathGenerator:
 
     @staticmethod
     def validate_path_specs(path_specs: list[UAVPathSpec]) -> None:
-        """严格校验路径规范的字段和圆弧几何一致性。"""
+        """严格校验新 schema：字段、连续性、与可构造性。"""
+
         if not path_specs:
             raise ValueError("path_specs must not be empty")
 
-        for index, spec in enumerate(path_specs):
+        for i, spec in enumerate(path_specs):
             if not isinstance(spec.uav_id, int):
-                raise TypeError(f"path_specs[{index}].uav_id must be int")
-            if spec.start_time_h < 0:
-                raise ValueError(f"path_specs[{index}].start_time_h must be >= 0")
+                raise TypeError(f"path_specs[{i}].uav_id must be int")
+            if not math.isfinite(float(spec.start_time_h)) or spec.start_time_h < 0:
+                raise ValueError(f"path_specs[{i}].start_time_h must be finite and >= 0")
             if len(spec.start_pos_u) != 2:
-                raise ValueError(f"path_specs[{index}].start_pos_u must contain 2 values")
+                raise ValueError(f"path_specs[{i}].start_pos_u must contain 2 values")
             if not spec.segments:
-                raise ValueError(f"path_specs[{index}].segments must not be empty")
+                raise ValueError(f"path_specs[{i}].segments must not be empty")
 
-            for seg_index, segment in enumerate(spec.segments):
-                if "end_point_u" not in segment:
-                    raise KeyError(f"path_specs[{index}].segments[{seg_index}] missing end_point_u")
-                if len(segment["end_point_u"]) != 2:
+            current_point = (float(spec.start_pos_u[0]), float(spec.start_pos_u[1]))
+            current_heading = 0.5 * math.pi
+
+            for j, segment in enumerate(spec.segments):
+                if not isinstance(segment, dict):
+                    raise TypeError(f"path_specs[{i}].segments[{j}] must be dict")
+                if "arc_turn" in segment:
+                    raise ValueError(UAVPathGenerator._migration_error_message())
+
+                seg_type = segment.get("segment_type")
+                if seg_type not in ("line", "arc"):
                     raise ValueError(
-                        f"path_specs[{index}].segments[{seg_index}].end_point_u must contain 2 values"
+                        f"path_specs[{i}].segments[{j}].segment_type must be 'line' or 'arc'"
                     )
 
-                arc_turn = segment.get("arc_turn")
-                if arc_turn is None:
+                if seg_type == "line":
+                    if "end_point_u" not in segment:
+                        raise KeyError(f"path_specs[{i}].segments[{j}] missing end_point_u")
+                    end = UAVPathGenerator._parse_point2(
+                        f"path_specs[{i}].segments[{j}].end_point_u",
+                        segment["end_point_u"],
+                    )
+                    dx = end[0] - current_point[0]
+                    dy = end[1] - current_point[1]
+                    if math.hypot(dx, dy) > _POINT_TOL_U:
+                        current_heading = math.atan2(dy, dx)
+                    current_point = end
                     continue
-                if arc_turn.radius_u <= 0:
+
+                if "arc" not in segment:
+                    raise KeyError(f"path_specs[{i}].segments[{j}] missing arc")
+                arc = segment["arc"]
+                if not isinstance(arc, ArcTurnSpec):
+                    raise TypeError(f"path_specs[{i}].segments[{j}].arc must be ArcTurnSpec")
+                if arc.radius_u <= 0:
+                    raise ValueError(f"path_specs[{i}].segments[{j}].arc.radius_u must be > 0")
+                if not math.isfinite(float(arc.rotation_angle_deg)):
                     raise ValueError(
-                        f"path_specs[{index}].segments[{seg_index}].arc_turn.radius_u must be > 0"
+                        f"path_specs[{i}].segments[{j}].arc.rotation_angle_deg must be finite"
                     )
-                if len(arc_turn.start_point_u) != 2 or len(arc_turn.end_point_u) != 2:
+                if arc.rotation_angle_deg < 0:
                     raise ValueError(
-                        f"path_specs[{index}].segments[{seg_index}].arc_turn points must contain 2 values"
+                        f"path_specs[{i}].segments[{j}].arc.rotation_angle_deg must be >= 0"
+                    )
+                if len(arc.start_point_u) != 2:
+                    raise ValueError(
+                        f"path_specs[{i}].segments[{j}].arc.start_point_u must contain 2 values"
                     )
 
-                sx, sy = arc_turn.start_point_u
-                ex, ey = arc_turn.end_point_u
-                chord_u = math.hypot(float(ex) - float(sx), float(ey) - float(sy))
-                if chord_u < 1e-9:
-                    raise ValueError(
-                        f"path_specs[{index}].segments[{seg_index}].arc_turn start/end must differ"
-                    )
-
-                if chord_u > 2.0 * float(arc_turn.radius_u) + 1e-6:
-                    raise ValueError(
-                        "path_specs["
-                        f"{index}].segments[{seg_index}].arc_turn is geometrically impossible: "
-                        f"chord={chord_u:.3f} > 2*radius={2.0 * float(arc_turn.radius_u):.3f}"
-                    )
-
-                if arc_turn.center_u is not None:
-                    cx, cy = arc_turn.center_u
-                    ds = math.hypot(float(sx) - float(cx), float(sy) - float(cy))
-                    de = math.hypot(float(ex) - float(cx), float(ey) - float(cy))
-                    radius_u = float(arc_turn.radius_u)
-                    if abs(ds - radius_u) > 1e-3 or abs(de - radius_u) > 1e-3:
+                start = UAVPathGenerator._parse_point2(
+                    f"path_specs[{i}].segments[{j}].arc.start_point_u",
+                    arc.start_point_u,
+                )
+                if UAVPathGenerator._distance_u(start, current_point) > 1e-3:
+                    if j == 0:
                         raise ValueError(
-                            f"path_specs[{index}].segments[{seg_index}].arc_turn center/radius mismatch"
+                            f"path_specs[{i}].segments[{j}] arc.start_point_u must equal start_pos_u"
                         )
+                    raise ValueError(
+                        f"path_specs[{i}].segments[{j}] arc.start_point_u is not continuous with previous segment end"
+                    )
+
+                end_point, end_heading = UAVPathGenerator._compute_arc_end_from_state(
+                    start,
+                    current_heading,
+                    arc,
+                )
+                current_point = end_point
+                current_heading = end_heading
 
 
 class UAVController:
@@ -230,304 +371,224 @@ class UAVController:
         self.cfg = cfg
         self.uav_id = uav_id
 
-        # 出发时间管理
         self.start_time_h = start_time_h
-        self.is_started = start_time_h <= 0.0  # 如果 start_time_h <= 0，立即启动
+        self.is_started = start_time_h <= 0.0
 
-        # 初始朝向：0.5π，表示沿 +y 方向起飞。
         self.angle = 0.5 * np.pi
         self.is_turning = False
         self.is_turning_clockwise = False
         self.turning_angle_each = 0.0
         self.turn_step_remain = 0
 
-        # 未指定时使用默认起点；多机模式可为每架 UAV 指定独立起点。
         if start_pos_u is None:
             self.pos_u = np.array([self.cfg.derived.uav_scan_radius_u, 0], dtype=np.int64)
         else:
             self.pos_u = np.array([int(start_pos_u[0]), int(start_pos_u[1])], dtype=np.int64)
-        self.turn_from_x_u = 0
-        self.turn_from_y_u = 0
-        self.turn_to_x_u = 0
-        self.turn_to_y_u = 0
 
-        # 路径规划字段（支持分段直线 + 圆弧转弯）
         self.segments: list[SegmentSpec] = []
         self.current_segment_idx: int = 0
-        self.current_arc_turn: Optional[ArcTurnSpec] = None
-        self.state: str = "flying_to_waypoint"  # "flying_to_waypoint" 或 "turning"
+        self.state: str = "flying_to_waypoint"
         self.auto_gen_type: Optional[str] = None
-        self._advance_segment_after_turn: bool = False
+
+        # 圆弧段运行时状态
+        self.current_arc_turn: Optional[ArcTurnSpec] = None
+        self._arc_center_u: Optional[np.ndarray] = None
+        self._arc_start_radial_angle: float = 0.0
+        self._arc_total_angle: float = 0.0
+        self._arc_progress_angle: float = 0.0
+        self._arc_start_heading: float = 0.0
+        self._arc_radius_u: float = 0.0
 
     @property
     def position_u(self) -> tuple[int, int]:
-        """返回整数单位坐标（用于与粒子系统交互）。"""
         return int(self.pos_u[0]), int(self.pos_u[1])
 
     def position_km(self) -> tuple[float, float]:
-        """返回 km 坐标（用于可视化与日志输出）。"""
         return self.pos_u[0] / self.cfg.numeric.scale, self.pos_u[1] / self.cfg.numeric.scale
 
     def angle_deg(self) -> float:
-        """返回 [0, 360) 的航向角度。"""
         return (self.angle * 180.0 / np.pi) % 360.0
 
-    def is_uav_up(self) -> bool:
-        return (self.angle > 0) and (self.angle < np.pi)
-
-    def is_uav_down(self) -> bool:
-        return (self.angle > np.pi) and (self.angle < 2 * np.pi)
-
-    def is_uav_outside_top_edge(self) -> bool:
-        return self.pos_u[1] >= self.cfg.derived.area_height_u
-
-    def is_uav_outside_bottom_edge(self) -> bool:
-        return self.pos_u[1] <= 0
-
-    def get_turn_angle(self, angle_from: float, angle_to: float, clockwise: bool) -> float:
-        """按指定方向计算转角，避免不必要的大回转。"""
-        diff = (angle_to - angle_from) % self.cfg.derived.two_pi
-        if clockwise:
-            if diff == 0:
-                return 0.0
-            return diff - self.cfg.derived.two_pi
-        return diff
-
-    def uav_turn_start(
-        self,
-        start_point: np.ndarray,
-        end_point: np.ndarray,
-        start_angle: float,
-        end_angle: float,
-        is_clockwise: bool,
-        radius_override_u: float | None = None,
-    ) -> None:
-        """
-        启动一次转向段。
-
-        核心几何：用弦长与圆心角推算转弯半径，再由弧长估算转向步数。
-        """
-        self.turn_from_x_u = int(start_point[0])
-        self.turn_from_y_u = int(start_point[1])
-        self.turn_to_x_u = int(end_point[0])
-        self.turn_to_y_u = int(end_point[1])
-
-        total_angle = self.get_turn_angle(start_angle, end_angle, is_clockwise)
-
-        dx = float(self.turn_to_x_u - self.turn_from_x_u)
-        dy = float(self.turn_to_y_u - self.turn_from_y_u)
-        chord_u = math.hypot(dx, dy)
-        theta = abs(total_angle)
-
-        # 极小角/极短弦视为无需转向，直接退出转向状态。
-        if theta < 1e-9 or chord_u < 1e-9:
-            self.turn_step_remain = 0
-            self.turning_angle_each = 0.0
-            self.is_turning = False
-            self.is_turning_clockwise = is_clockwise
-            return
-
-        den = 2.0 * math.sin(theta * 0.5)
-        if radius_override_u is not None and radius_override_u > 0:
-            turn_radius_u = float(radius_override_u)
-        elif abs(den) < 1e-9:
-            turn_radius_u = float(self.cfg.derived.uav_scan_radius_u)
-        else:
-            turn_radius_u = chord_u / abs(den)
-
-        arc_length_u = abs(total_angle) * turn_radius_u
-        self.turn_step_remain = max(1, int(round(arc_length_u / self.cfg.derived.uav_step_u)))
-        self.turning_angle_each = total_angle / self.turn_step_remain
-        self.is_turning = True
-        self.is_turning_clockwise = is_clockwise
-
-    def is_uav_at_end_corner(self) -> bool:
-        """判定是否已完成条带覆盖（右上角向上 / 右下角向下）。"""
-        if (
-            self.is_uav_outside_top_edge()
-            and (self.pos_u[0] + self.cfg.derived.uav_scan_radius_u) >= self.cfg.derived.area_width_u
-            and self.is_uav_up()
-        ):
-            return True
-        if (
-            self.is_uav_outside_bottom_edge()
-            and (self.pos_u[0] + self.cfg.derived.uav_scan_radius_u) >= self.cfg.derived.area_width_u
-            and self.is_uav_down()
-        ):
-            return True
-        return False
-
-    def _is_waypoint_reached(self, target_pos_u: tuple[int, int], tolerance_u: int = 1000) -> bool:
-        """
-        判断是否已到达目标点（使用距离容差）。
-        
-        参数：
-            target_pos_u - 目标点 (x, y)
-            tolerance_u - 容差值（整数单位）
-        """
+    def _is_waypoint_reached(self, target_pos_u: tuple[float, float], tolerance_u: int = 1000) -> bool:
         dx = float(self.pos_u[0]) - float(target_pos_u[0])
         dy = float(self.pos_u[1]) - float(target_pos_u[1])
-        distance = math.hypot(dx, dy)
-        return distance <= tolerance_u
+        return math.hypot(dx, dy) <= tolerance_u
 
-    def _compute_heading_to_waypoint(self, target_pos_u: tuple[int, int]) -> float:
-        """计算指向目标点的航向角度（弧度）。"""
+    def _compute_heading_to_waypoint(self, target_pos_u: tuple[float, float]) -> float:
         dx = float(target_pos_u[0]) - float(self.pos_u[0])
         dy = float(target_pos_u[1]) - float(self.pos_u[1])
         return math.atan2(dy, dx)
 
-    def update(self, elapsed_time_h: float) -> bool:
-        """
-        状态机推进一步。支持两种运动模式：
-        1. 条带扫描模式（legacy）- 自动掉头逻辑
-        2. 自定义路径模式 - 按路径段及圆弧参数运动
+    def _move_toward_point(self, target_pos_u: tuple[float, float], step_u: float) -> bool:
+        """向目标点推进一步；返回是否已在本步到达。"""
 
-        返回：
-        - True: 继续扫描
-        - False: 扫描完成或达到终止角
-        """
-        # 检查是否已启动：若未启动且达到出发时间，则激活
-        if not self.is_started:
-            if elapsed_time_h >= self.start_time_h:
-                self.is_started = True
-                # 立即执行第一步，避免跳跃
-            else:
-                # 未到出发时间，保持活跃但不动作
-                return True
+        dx = float(target_pos_u[0]) - float(self.pos_u[0])
+        dy = float(target_pos_u[1]) - float(self.pos_u[1])
+        dist_u = math.hypot(dx, dy)
+        if dist_u <= step_u:
+            self.pos_u[0] = int(round(target_pos_u[0]))
+            self.pos_u[1] = int(round(target_pos_u[1]))
+            if dist_u > _POINT_TOL_U:
+                self.angle = math.atan2(dy, dx)
+            self.angle = UAVPathGenerator._normalize_angle_0_2pi(self.angle)
+            return True
 
-        # 自定义路径模式处理（直线运动版本）
-        if self.segments and self.state != "strip_scan":
-            return self._update_custom_path()
+        self.angle = math.atan2(dy, dx)
+        self.pos_u[0] += int(round(step_u * math.cos(self.angle)))
+        self.pos_u[1] += int(round(step_u * math.sin(self.angle)))
+        self.angle = UAVPathGenerator._normalize_angle_0_2pi(self.angle)
+        return False
 
-        # 条带扫描模式（原有逻辑）
-        # 若处于转向阶段，则先累加转角再做位移。
-        if self.turn_step_remain > 0:
-            self.angle += self.turning_angle_each
-            self.turn_step_remain -= 1
-            if self.turn_step_remain == 0:
-                self.turning_angle_each = 0.0
-                self.is_turning = False
+    def uav_turn_start(self, arc_spec: ArcTurnSpec, start_heading_rad: float) -> None:
+        """启动圆弧段：由起点、半径、方向、旋转角驱动。"""
 
-        # 角度归一化，避免长期迭代导致数值膨胀。
-        self.angle = self.angle % self.cfg.derived.two_pi
+        total_abs = UAVPathGenerator._deg_to_rad_stable(float(arc_spec.rotation_angle_deg))
+        if total_abs <= _ANGLE_TOL_RAD:
+            self.is_turning = False
+            self.turn_step_remain = 0
+            self.turning_angle_each = 0.0
+            self.current_arc_turn = None
+            return
 
-        # 基于当前航向推进一步。
-        self.pos_u[0] += int(round(self.cfg.derived.uav_step_u * np.cos(self.angle)))
-        self.pos_u[1] += int(round(self.cfg.derived.uav_step_u * np.sin(self.angle)))
+        start_point = np.array([float(arc_spec.start_point_u[0]), float(arc_spec.start_point_u[1])], dtype=float)
+        center = UAVPathGenerator._build_arc_center_from_heading(
+            (float(arc_spec.start_point_u[0]), float(arc_spec.start_point_u[1])),
+            start_heading_rad,
+            float(arc_spec.radius_u),
+            bool(arc_spec.is_clockwise),
+        )
+        center_arr = np.array([center[0], center[1]], dtype=float)
 
-        if self.is_uav_at_end_corner():
-            print(f"UAV#{self.uav_id} scan completed! Elapsed time: {elapsed_time_h:.2f} h")
-            return False
+        signed_total = -total_abs if arc_spec.is_clockwise else total_abs
+        arc_length_u = abs(signed_total) * float(arc_spec.radius_u)
+        step_u = float(self.cfg.derived.uav_step_u)
+        steps = max(1, int(math.ceil(arc_length_u / step_u)))
 
-        # 到达上下边界后启动掉头，切换到下一条条带。
-        if not self.is_turning:
-            if self.is_uav_up() and self.is_uav_outside_top_edge():
-                self.uav_turn_start(
-                    self.pos_u.copy(),
-                    np.array([self.pos_u[0] + 2 * self.cfg.derived.uav_scan_radius_u, self.pos_u[1]]),
-                    self.angle,
-                    1.5 * np.pi,
-                    is_clockwise=True,
-                )
-            elif self.is_uav_down() and self.is_uav_outside_bottom_edge():
-                self.uav_turn_start(
-                    self.pos_u.copy(),
-                    np.array([self.pos_u[0] + 2 * self.cfg.derived.uav_scan_radius_u, self.pos_u[1]]),
-                    self.angle,
-                    0.5 * np.pi,
-                    is_clockwise=False,
-                )
+        self.is_turning = True
+        self.is_turning_clockwise = bool(arc_spec.is_clockwise)
+        self.turn_step_remain = steps
+        self.turning_angle_each = signed_total / steps
+
+        self.current_arc_turn = arc_spec
+        self._arc_center_u = center_arr
+        self._arc_radius_u = float(arc_spec.radius_u)
+        self._arc_start_radial_angle = math.atan2(start_point[1] - center_arr[1], start_point[0] - center_arr[0])
+        self._arc_total_angle = signed_total
+        self._arc_progress_angle = 0.0
+        self._arc_start_heading = UAVPathGenerator._normalize_angle_0_2pi(start_heading_rad)
+        self.state = "turning"
+
+    def _finish_current_arc_segment(self) -> None:
+        if self.current_arc_turn is None:
+            return
+
+        arc = self.current_arc_turn
+        signed_total = self._arc_total_angle
+        end_radial = self._arc_start_radial_angle + signed_total
+        end_x = float(self._arc_center_u[0]) + self._arc_radius_u * math.cos(end_radial)
+        end_y = float(self._arc_center_u[1]) + self._arc_radius_u * math.sin(end_radial)
+
+        self.pos_u[0] = int(round(end_x))
+        self.pos_u[1] = int(round(end_y))
+        self.angle = UAVPathGenerator._normalize_angle_0_2pi(self._arc_start_heading + signed_total)
+
+        self.is_turning = False
+        self.turn_step_remain = 0
+        self.turning_angle_each = 0.0
+        self.current_arc_turn = None
+        self._arc_center_u = None
+        self._arc_start_radial_angle = 0.0
+        self._arc_total_angle = 0.0
+        self._arc_progress_angle = 0.0
+        self._arc_start_heading = 0.0
+        self._arc_radius_u = 0.0
+
+        self.current_segment_idx += 1
+        self.state = "flying_to_waypoint"
+
+    def _advance_arc_step(self) -> bool:
+        if not self.is_turning or self.current_arc_turn is None:
+            return True
+
+        remaining = self._arc_total_angle - self._arc_progress_angle
+        if abs(remaining) <= _ANGLE_TOL_RAD:
+            self._finish_current_arc_segment()
+            return True
+
+        delta = self.turning_angle_each
+        if abs(delta) > abs(remaining):
+            delta = remaining
+
+        self._arc_progress_angle += delta
+        self.turn_step_remain -= 1
+
+        radial = self._arc_start_radial_angle + self._arc_progress_angle
+        px = float(self._arc_center_u[0]) + self._arc_radius_u * math.cos(radial)
+        py = float(self._arc_center_u[1]) + self._arc_radius_u * math.sin(radial)
+        self.pos_u[0] = int(round(px))
+        self.pos_u[1] = int(round(py))
+
+        tangent_offset = -0.5 * math.pi if self.is_turning_clockwise else 0.5 * math.pi
+        self.angle = UAVPathGenerator._normalize_angle_0_2pi(radial + tangent_offset)
+
+        if self.turn_step_remain <= 0 or abs(self._arc_total_angle - self._arc_progress_angle) <= _ANGLE_TOL_RAD:
+            self._finish_current_arc_segment()
 
         return True
 
+    def update(self, elapsed_time_h: float) -> bool:
+        if not self.is_started:
+            if elapsed_time_h >= self.start_time_h:
+                self.is_started = True
+            else:
+                return True
+
+        if not self.segments:
+            raise RuntimeError(
+                "UAVController requires non-empty segments. "
+                "Strip-scan mode has been removed; provide external path specs."
+            )
+        return self._update_custom_path()
+
     def _update_custom_path(self) -> bool:
-        """
-        自定义路径运动更新（直线 + 圆弧的基础版本）。
-        
-        当前实现：
-        - 直线段：计算指向目标点的角度，直线靠近
-        - 圆弧转弯：简化处理（保留现有转弯逻辑）
-        - 路径完成：到达最后一个段的终点时扫描完成
-        """
-        # 检查是否所有路段都已完成
         if self.current_segment_idx >= len(self.segments):
             print(f"UAV#{self.uav_id} completed all segments!")
             return False
 
-        current_segment = self.segments[self.current_segment_idx]
-        target_point_u = current_segment["end_point_u"]
-        arc_turn = current_segment.get("arc_turn")
+        if self.is_turning:
+            return self._advance_arc_step()
 
+        segment = self.segments[self.current_segment_idx]
+        seg_type = segment["segment_type"]
         step_u = float(self.cfg.derived.uav_step_u)
 
-        # 检查是否处于圆弧转弯中
-        if self.is_turning:
-            # 继续圆弧转弯
-            self.angle += self.turning_angle_each
-            self.turn_step_remain -= 1
-            if self.turn_step_remain <= 0:
-                self.turning_angle_each = 0.0
-                self.is_turning = False
-                self.turn_step_remain = 0
-                if self._advance_segment_after_turn:
-                    self.current_segment_idx += 1
-                    self._advance_segment_after_turn = False
-            
-            self.angle = self.angle % self.cfg.derived.two_pi
-            self.pos_u[0] += int(round(self.cfg.derived.uav_step_u * np.cos(self.angle)))
-            self.pos_u[1] += int(round(self.cfg.derived.uav_step_u * np.sin(self.angle)))
-            return True
-
-        # 直线运动：先计算到目标点的距离，避免越点后错过 waypoint。
-        dx = float(target_point_u[0]) - float(self.pos_u[0])
-        dy = float(target_point_u[1]) - float(self.pos_u[1])
-        dist_u = math.hypot(dx, dy)
-        approach_angle = math.atan2(dy, dx) if dist_u > 1e-9 else self.angle
-
-        if dist_u <= step_u:
-            # 一步内可到达时，直接吸附到 waypoint，确保路径必经。
-            self.pos_u[0] = int(target_point_u[0])
-            self.pos_u[1] = int(target_point_u[1])
-            self.angle = approach_angle
-
-            # 检查是否有圆弧转弯
-            if arc_turn is not None:
-                # 保证圆弧起点与当前落点对齐，避免几何抖动。
-                self.pos_u[0] = int(round(arc_turn.start_point_u[0]))
-                self.pos_u[1] = int(round(arc_turn.start_point_u[1]))
-
-                # 启动圆弧转弯
-                start_angle = approach_angle
-                end_angle = math.atan2(
-                    float(arc_turn.end_point_u[1]) - float(arc_turn.start_point_u[1]),
-                    float(arc_turn.end_point_u[0]) - float(arc_turn.start_point_u[0]),
-                )
-                
-                self.uav_turn_start(
-                    np.array(arc_turn.start_point_u),
-                    np.array(arc_turn.end_point_u),
-                    start_angle,
-                    end_angle,
-                    is_clockwise=arc_turn.is_clockwise,
-                    radius_override_u=arc_turn.radius_u,
-                )
-                if self.is_turning:
-                    self._advance_segment_after_turn = True
-                else:
-                    # 若该转弯在几何上退化为 0 步，立即前进到下一段避免停滞。
-                    self.current_segment_idx += 1
-                    self._advance_segment_after_turn = False
-            else:
-                # 无转弯，直接进入下一段
+        if seg_type == "line":
+            target = segment["end_point_u"]
+            reached = self._move_toward_point((float(target[0]), float(target[1])), step_u)
+            if reached:
                 self.current_segment_idx += 1
             return True
 
-        # 尚未到点则按直线方向推进一步。
-        target_angle = math.atan2(dy, dx)
-        self.angle = target_angle
-        self.pos_u[0] += int(round(step_u * np.cos(self.angle)))
-        self.pos_u[1] += int(round(step_u * np.sin(self.angle)))
+        arc = segment["arc"]
+        start = (float(arc.start_point_u[0]), float(arc.start_point_u[1]))
 
+        if not self._is_waypoint_reached(start, tolerance_u=max(1000, int(step_u))):
+            self._move_toward_point(start, step_u)
+            return True
+
+        self.pos_u[0] = int(round(start[0]))
+        self.pos_u[1] = int(round(start[1]))
+
+        total_abs = UAVPathGenerator._deg_to_rad_stable(float(arc.rotation_angle_deg))
+        if total_abs <= _ANGLE_TOL_RAD:
+            self.current_segment_idx += 1
+            return True
+
+        self.uav_turn_start(arc_spec=arc, start_heading_rad=self.angle)
+        if self.is_turning:
+            return self._advance_arc_step()
+
+        self.current_segment_idx += 1
         return True
 
 
@@ -542,28 +603,13 @@ class UAVFleetController:
         self._build_controllers()
 
     def _build_controllers(self) -> None:
-        """
-        根据配置模式初始化 UAV 控制器。
-        支持两种模式：
-        - "auto_strip_scan": 自动条带扫描（默认）
-        - "custom_paths": 从 JSON 加载自定义路径
-        """
-        mode = self.cfg.uav_fleet_mode.mode
+        json_file = self.cfg.uav_fleet_mode.custom_paths_json
+        if not json_file:
+            raise ValueError("custom_paths_json must be set")
+        path_specs = UAVPathGenerator.load_custom_paths_from_json(json_file)
+        if self.cfg.uav_fleet_mode.strict_path_validation:
+            UAVPathGenerator.validate_path_specs(path_specs)
 
-        if mode == "custom_paths":
-            # 加载自定义路径
-            json_file = self.cfg.uav_fleet_mode.custom_paths_json
-            if not json_file:
-                raise ValueError("custom_paths mode requires custom_paths_json  to be set")
-            path_specs = UAVPathGenerator.load_custom_paths_from_json(json_file)
-            if self.cfg.uav_fleet_mode.strict_path_validation:
-                UAVPathGenerator.validate_path_specs(path_specs)
-        else:
-            # 默认条带扫描模式
-            path_specs = UAVPathGenerator.generate_strip_scan_paths(self.cfg)
-
-        # 从路径规范创建 UAVController
-        clamped_count = 0
         overlap_count = 0
         used_x: set[int] = set()
 
@@ -574,55 +620,38 @@ class UAVFleetController:
                 start_pos_u=spec.start_pos_u,
                 start_time_h=spec.start_time_h,
             )
-            # 设置路径规划字段
             uav.segments = spec.segments
             uav.auto_gen_type = spec.auto_gen_type
             uav.current_segment_idx = 0
-            uav.state = "flying_to_waypoint" if spec.segments else "strip_scan"
-            # 注：当 segments 为空时，使用旧的条带扫描逻辑
+            uav.state = "flying_to_waypoint"
 
-            # 边界检查（仅条带扫描模式）
             x = spec.start_pos_u[0]
-            if x not in used_x:
-                used_x.add(x)
-            else:
+            if x in used_x:
                 overlap_count += 1
+            used_x.add(x)
 
             self.controllers.append(uav)
             self.active_flags.append(True)
 
-        if clamped_count > 0 or overlap_count > 0:
+        if overlap_count > 0:
             print(
                 "[FLEET][WARN] start positions analyzed: "
-                f"overlapped={overlap_count}, "
-                f"unique_x={len(used_x)}/{len(self.controllers)}."
+                f"overlapped={overlap_count}, unique_x={len(used_x)}/{len(self.controllers)}."
             )
 
     @property
     def primary_controller(self) -> UAVController:
-        """返回主 UAV（用于兼容现有日志/可视化接口）。"""
         return self.controllers[0]
 
     @property
     def active_positions_u(self) -> list[tuple[int, int]]:
-        """返回仍在扫描中的 UAV 当前位置列表。"""
-        return [
-            uav.position_u
-            for uav, active in zip(self.controllers, self.active_flags)
-            if active
-        ]
+        return [uav.position_u for uav, active in zip(self.controllers, self.active_flags) if active]
 
     @property
     def scan_positions_u(self) -> list[tuple[int, int]]:
-        """返回本步应参与扫描的位置（含本步刚结束的 UAV 终点）。"""
         return self.last_step_positions_u
 
     def update_all(self, elapsed_time_h: float) -> bool:
-        """
-        推进所有活跃 UAV 一步。
-
-        返回：是否仍至少有一架 UAV 在继续扫描。
-        """
         any_active = False
         step_positions: list[tuple[int, int]] = []
         for i, uav in enumerate(self.controllers):
@@ -641,80 +670,38 @@ class UAVFleetController:
 
 
 class UAVFleetBuilder:
-    """High-level API surface intended for external scripts and agents.
-
-    Preferred call order for agents:
-    1) from_default_config (keep current project behavior)
-    2) from_custom_json (when config is file-driven)
-    3) from_path_specs (when caller builds objects in-memory)
-    """
+    """High-level API surface intended for external scripts and agents."""
 
     @staticmethod
     def from_default_config(cfg) -> UAVFleetController:
-        """Build fleet according to cfg.uav_fleet_mode.mode."""
-        return UAVFleetController(cfg)
+        raise NotImplementedError(
+            "from_default_config() has been removed. "
+            "Use from_custom_json(cfg, json_filepath) or from_path_specs(cfg, path_specs)."
+        )
 
     @staticmethod
     def from_strip_scan(cfg, override_params: dict | None = None) -> UAVFleetController:
-        """Build fleet in strip-scan mode with optional temporary overrides.
-
-        Supported override keys:
-            - uav_count
-            - start_spacing_scan_diameters
-        """
-        # 保存原始配置
-        orig_mode = cfg.uav_fleet_mode.mode
-        orig_uav_count = cfg.fleet.uav_count
-        orig_spacing = cfg.fleet.start_spacing_scan_diameters
-
-        try:
-            # 应用参数覆盖
-            cfg.uav_fleet_mode.mode = "auto_strip_scan"
-            if override_params:
-                if "uav_count" in override_params:
-                    cfg.fleet.uav_count = override_params["uav_count"]
-                if "start_spacing_scan_diameters" in override_params:
-                    cfg.fleet.start_spacing_scan_diameters = override_params["start_spacing_scan_diameters"]
-            
-            # 重新计算派生参数
-            cfg.recompute_derived()
-
-            # 创建控制器
-            fleet = UAVFleetController(cfg)
-            return fleet
-        finally:
-            # 恢复原始配置
-            cfg.uav_fleet_mode.mode = orig_mode
-            cfg.fleet.uav_count = orig_uav_count
-            cfg.fleet.start_spacing_scan_diameters = orig_spacing
-            cfg.recompute_derived()
+        raise NotImplementedError(
+            "from_strip_scan() has been removed. "
+            "Please provide external path specs via from_custom_json()/from_path_specs()."
+        )
 
     @staticmethod
     def from_custom_json(cfg, json_filepath: str) -> UAVFleetController:
-        """Build fleet from custom JSON and switch cfg mode to custom_paths."""
-        # 设置配置为自定义路径模式
-        cfg.uav_fleet_mode.mode = "custom_paths"
         cfg.uav_fleet_mode.custom_paths_json = json_filepath
-        
         return UAVFleetController(cfg)
 
     @staticmethod
     def from_path_specs(cfg, path_specs: list[UAVPathSpec]) -> UAVFleetController:
-        """Build fleet directly from in-memory path specs.
-
-        This path avoids file I/O and is the fastest option for agent pipelines.
-        """
         if cfg.uav_fleet_mode.strict_path_validation:
             UAVPathGenerator.validate_path_specs(path_specs)
 
-        # 创建 fleet 对象但跳过 _build_controllers（手动初始化）
         fleet = UAVFleetController.__new__(UAVFleetController)
         fleet.cfg = cfg
         fleet.controllers = []
         fleet.active_flags = []
         fleet.last_step_positions_u = []
 
-        # 手动创建控制器
         for spec in path_specs:
             uav = UAVController(
                 cfg,
@@ -725,7 +712,7 @@ class UAVFleetBuilder:
             uav.segments = spec.segments
             uav.auto_gen_type = spec.auto_gen_type
             uav.current_segment_idx = 0
-            uav.state = "flying_to_waypoint" if spec.segments else "strip_scan"
+            uav.state = "flying_to_waypoint"
 
             fleet.controllers.append(uav)
             fleet.active_flags.append(True)

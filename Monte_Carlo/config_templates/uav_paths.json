@@ -1,0 +1,119 @@
+[
+  {
+    "_comment": "UAV#0 负责左侧 1/3 区域 x∈[0,102000]：从区域左下角右偏 1 个扫描半径出发，蛇形扫描到顶端结束。",
+    "uav_id": 0,
+    "start_time_h": 1.0,
+    "start_pos_u": [20000, 0],
+    "segments": [
+      {
+        "segment_type": "line",
+        "end_point_u": [20000, 444000]
+      },
+      {
+        "segment_type": "arc",
+        "arc": {
+          "start_point_u": [20000, 444000],
+          "radius_u": 15500,
+          "is_clockwise": true,
+          "rotation_angle_deg": 180
+        }
+      },
+      {
+        "segment_type": "line",
+        "end_point_u": [51000, 0]
+      },
+      {
+        "segment_type": "arc",
+        "arc": {
+          "start_point_u": [51000, 0],
+          "radius_u": 15500,
+          "is_clockwise": false,
+          "rotation_angle_deg": 180
+        }
+      },
+      {
+        "segment_type": "line",
+        "end_point_u": [82000, 444000]
+      }
+    ],
+    "auto_gen_type": "custom"
+  },
+  {
+    "_comment": "UAV#1 负责中间 1/3 区域 x∈[102000,204000]。",
+    "uav_id": 1,
+    "start_time_h": 2.0,
+    "start_pos_u": [122000, 0],
+    "segments": [
+      {
+        "segment_type": "line",
+        "end_point_u": [122000, 444000]
+      },
+      {
+        "segment_type": "arc",
+        "arc": {
+          "start_point_u": [122000, 444000],
+          "radius_u": 15500,
+          "is_clockwise": true,
+          "rotation_angle_deg": 180
+        }
+      },
+      {
+        "segment_type": "line",
+        "end_point_u": [153000, 0]
+      },
+      {
+        "segment_type": "arc",
+        "arc": {
+          "start_point_u": [153000, 0],
+          "radius_u": 15500,
+          "is_clockwise": false,
+          "rotation_angle_deg": 180
+        }
+      },
+      {
+        "segment_type": "line",
+        "end_point_u": [184000, 444000]
+      }
+    ],
+    "auto_gen_type": "custom"
+  },
+  {
+    "_comment": "UAV#2 负责右侧 1/3 区域 x∈[204000,306000]。",
+    "uav_id": 2,
+    "start_time_h": 4.0,
+    "start_pos_u": [224000, 0],
+    "segments": [
+      {
+        "segment_type": "line",
+        "end_point_u": [224000, 444000]
+      },
+      {
+        "segment_type": "arc",
+        "arc": {
+          "start_point_u": [224000, 444000],
+          "radius_u": 15500,
+          "is_clockwise": true,
+          "rotation_angle_deg": 180
+        }
+      },
+      {
+        "segment_type": "line",
+        "end_point_u": [255000, 0]
+      },
+      {
+        "segment_type": "arc",
+        "arc": {
+          "start_point_u": [255000, 0],
+          "radius_u": 15500,
+          "is_clockwise": false,
+          "rotation_angle_deg": 180
+        }
+      },
+      {
+        "segment_type": "line",
+        "end_point_u": [286000, 444000]
+      }
+    ],
+    "auto_gen_type": "custom"
+  }
+]

@@ -30,44 +30,52 @@ def _get_rss_gb() -> float:
     return (rss_pages * page_size) / (1024.0 ** 3)                   # bytes -> GB。
 
 
-def _apply_api_demo_mode(cfg, script_dir: str) -> None:
-    """
-    应用 API 可视化验证模式。
+def _resolve_external_path_source(cfg, script_dir: str) -> str | None:
+    """统一解析外置路径来源：收集、冲突检测、绝对路径解析。"""
+    sources: list[tuple[str, str]] = []
+    cfg_path = (cfg.uav_fleet_mode.custom_paths_json or "").strip()
+    if cfg_path:
+        sources.append(("uav_fleet_mode.custom_paths_json", cfg_path))
 
-    触发条件：cfg.runtime.api_demo_enable=True
-    相关配置：
-    - cfg.runtime.api_demo_json_path: 自定义路径 JSON（相对 script_dir）
-    - cfg.runtime.api_demo_steps: 仿真最大步数
-    - cfg.runtime.api_demo_realtime_visualization: 是否打开实时窗口
-    """
-    if not cfg.runtime.api_demo_enable:                               # 未开启演示模式则直接返回。
-        return
+    if cfg.runtime.api_demo_enable:
+        demo_path = (cfg.runtime.api_demo_json_path or "").strip()
+        if demo_path:
+            sources.append(("runtime.api_demo_json_path", demo_path))
 
-    json_path = cfg.runtime.api_demo_json_path                        # 读取配置中的 JSON 路径。
-    if not os.path.isabs(json_path):                                  # 允许配置写相对路径。
-        json_path = os.path.join(script_dir, json_path)               # 转成绝对路径。
-    if not os.path.exists(json_path):                                 # 防止演示直接失败在文件缺失上。
-        raise FileNotFoundError(f"UAV_API_DEMO_JSON not found: {json_path}")
+    if len(sources) > 1:
+        msg = (
+            "[PATH][WARN] multiple path sources configured: "
+            + ", ".join(f"{name}={value}" for name, value in sources)
+            + "."
+        )
+        if cfg.uav_fleet_mode.path_source_conflict_action == "raise":
+            raise ValueError(msg)
+        print(msg)
+        return None
 
-    demo_steps = int(cfg.runtime.api_demo_steps)                     # 演示步数由配置决定。
+    if not sources:
+        if not cfg.uav_fleet_mode.require_external_paths:
+            return None
+        msg = "[PATH][WARN] no external UAV path file configured."
+        if cfg.uav_fleet_mode.missing_path_action == "raise":
+            raise ValueError(msg)
+        print(msg)
+        return None
 
-    cfg.uav_fleet_mode.mode = "custom_paths"                        # 演示模式固定为自定义路径。
-    cfg.uav_fleet_mode.custom_paths_json = json_path                 # 指向 JSON 路径。
+    _, raw_path = sources[0]
+    resolved_path = raw_path
+    if cfg.uav_fleet_mode.resolve_relative_to_script_dir and not os.path.isabs(resolved_path):
+        resolved_path = os.path.join(script_dir, resolved_path)
+    resolved_path = os.path.abspath(resolved_path)
 
-    # 为验证模式强化可视化可观察性。
-    cfg.runtime.realtime_visualization = cfg.runtime.api_demo_realtime_visualization  # 由配置决定是否开窗。
-    cfg.runtime.export_simulation_video = True                        # 演示模式固定导出视频。
-    cfg.refresh.steps_to_update = 1                                   # 每步刷新，便于看实时变化。
-    cfg.simulation.max_steps = max(1, demo_steps)                     # 限制总步数，避免演示过长。
+    if not os.path.exists(resolved_path):
+        msg = f"[PATH][WARN] external UAV path file not found: {resolved_path}"
+        if cfg.uav_fleet_mode.missing_path_action == "raise":
+            raise FileNotFoundError(msg)
+        print(msg)
+        return None
 
-    print("[API-DEMO] enabled")                                      # 打印演示模式标记。
-    print(f"[API-DEMO] json={json_path}")                             # 打印所用 JSON 方便追踪。
-    print(f"[API-DEMO] max_steps={cfg.simulation.max_steps}")        # 打印步数上限。
-    print(
-        "[API-DEMO] visual: "                                        # 打印可视化状态摘要。
-        f"realtime={cfg.runtime.realtime_visualization}, "
-        f"video={cfg.runtime.export_simulation_video}"
-    )
+    return resolved_path
 
 
 def main() -> None:
@@ -83,7 +91,11 @@ def main() -> None:
     # 以当前脚本目录为根，保证路径在不同启动目录下都一致。
     script_dir = os.path.dirname(os.path.abspath(__file__))           # 定位 main.py 所在目录。
     cfg = build_default_config(script_dir=script_dir)                 # 构建默认配置与设备信息。
-    _apply_api_demo_mode(cfg, script_dir)                             # 若开启演示模式则覆盖配置。
+    resolved_path = _resolve_external_path_source(cfg, script_dir)
+    if resolved_path is None:
+        print("[PATH][WARN] simulation skipped: unresolved external UAV path source.")
+        return
+    cfg.uav_fleet_mode.custom_paths_json = resolved_path
     assert cfg.device_runtime is not None                             # 设备信息必须已经初始化。
 
     print(f"Using CUDA device: {cfg.device_runtime.gpu_name}")       # 告知当前运行设备。
@@ -93,7 +105,7 @@ def main() -> None:
     print(f"Results directory: {data_logger.run_results_dir}")        # 打印结果目录，便于快速定位。
 
     particle_system = ParticleSystem(cfg)                             # 创建 GPU 粒子系统。
-    fleet_controller = UAVFleetBuilder.from_default_config(cfg)       # 创建 UAV 机群控制器。
+    fleet_controller = UAVFleetBuilder.from_custom_json(cfg, resolved_path)  # 创建 UAV 机群控制器。
     data_logger.init_uav_trace_fleet(fleet_controller.controllers)    # 初始化轨迹缓存。
 
     # 可视化初始化阶段读取一次初始密度，用于固定色条范围。

@@ -29,18 +29,14 @@ class MotionConfig:
 
 
 @dataclass
-class FleetConfig:
-    uav_count: int = 2                          # UAV 数量（>=1）
-    start_spacing_scan_diameters: float = 3.5  # 相邻起始间距（单位：扫描直径倍数）
-
-
-@dataclass
 class UAVFleetModeConfig:
     """UAV 机群路径规划模式配置。"""
-    mode: str = "auto_strip_scan"              # 模式："auto_strip_scan" 或 "custom_paths"
-    custom_paths_json: str | None = None       # 自定义路径 JSON 文件路径（仅当 mode="custom_paths"）
-    auto_gen_strip_params: dict | None = None  # 条带扫描参数字典（可选覆盖默认值）
-    strict_path_validation: bool = False       # 是否启用强校验：几何/字段不合法直接报错
+    custom_paths_json: str | None = None       # 自定义路径 JSON 文件路径（可相对 script_dir）
+    strict_path_validation: bool = True        # 是否启用强校验：几何/字段不合法直接报错
+    require_external_paths: bool = True        # 是否强制要求提供外置路径文件
+    missing_path_action: str = "warn_and_exit"  # 缺失路径时行为：warn_and_exit/raise
+    path_source_conflict_action: str = "warn_and_exit"  # API 路径与配置路径冲突时行为
+    resolve_relative_to_script_dir: bool = True  # 路径是否按 script_dir 解析相对路径
 
 
 @dataclass
@@ -50,11 +46,9 @@ class RuntimeSwitchesConfig:
     export_simulation_video: bool = True               # 是否导出仿真视频（mp4/gif）
     export_uav_trajectory: bool = True                 # 是否导出 UAV 轨迹文件
 
-    # API 演示模式：用于快速验证自定义路径、可视化和导出流程。
-    api_demo_enable: bool = False                      # 是否启用 API 演示模式（main 自动切到自定义路径）
-    api_demo_realtime_visualization: bool = True       # 演示模式下是否默认打开实时窗口
-    api_demo_steps: int = 4000                         # 演示模式最大步数
-    api_demo_json_path: str = "config_templates/multi_uav_paths.json"  # 演示模式路径 JSON（相对 script_dir）
+    # API 演示模式：仅作为“额外路径来源”，不改变路径模式语义。
+    api_demo_enable: bool = True                      # 是否启用演示路径来源
+    api_demo_json_path: str = "config_templates/uav_paths.json"  # 演示路径 JSON（相对 script_dir）
 
 
 @dataclass
@@ -143,7 +137,6 @@ class AppConfig:
     simulation: SimulationTuningConfig               # 仿真核心参数
     environment: EnvironmentConfig                   # 区域参数
     motion: MotionConfig                             # 运动参数
-    fleet: FleetConfig                               # 机群参数
     uav_fleet_mode: UAVFleetModeConfig              # UAV 路径规划模式配置
     runtime: RuntimeSwitchesConfig                  # 运行时功能开关
     refresh: RefreshPolicyConfig                    # 刷新策略
@@ -200,12 +193,17 @@ class AppConfig:
             raise ValueError("grid_size_km must be > 0")
         if self.motion.uav_scan_radius_km <= 0:
             raise ValueError("uav_scan_radius_km must be > 0")
-        if self.fleet.uav_count <= 0:
-            raise ValueError("uav_count must be > 0")
-        if self.fleet.start_spacing_scan_diameters <= 0:
-            raise ValueError("start_spacing_scan_diameters must be > 0")
         if self.export.trajectory_export_format.lower() not in {"csv", "parquet", "both"}:
             raise ValueError("trajectory_export_format must be one of csv/parquet/both")
+        if self.uav_fleet_mode.missing_path_action not in {"warn_and_exit", "raise"}:
+            raise ValueError("missing_path_action must be one of warn_and_exit/raise")
+        if self.uav_fleet_mode.path_source_conflict_action not in {"warn_and_exit", "raise"}:
+            raise ValueError("path_source_conflict_action must be one of warn_and_exit/raise")
+        if self.uav_fleet_mode.require_external_paths and self.uav_fleet_mode.missing_path_action not in {
+            "warn_and_exit",
+            "raise",
+        }:
+            raise ValueError("require_external_paths requires valid missing_path_action")
 
     def configure_device(self) -> None:
         """按策略检测并配置运行设备（cuda/cpu）。"""
@@ -222,13 +220,12 @@ class AppConfig:
         self.device_runtime = DeviceRuntime(device=device, gpu_name=gpu_name)
 
 
-def build_default_config(script_dir: str) -> AppConfig:
+def build_default_config(script_dir: str, require_cuda_override: bool | None = None) -> AppConfig:
     """构建默认配置并完成：派生计算 + 校验 + 设备配置。"""
     cfg = AppConfig(
         simulation=SimulationTuningConfig(),
         environment=EnvironmentConfig(),
         motion=MotionConfig(),
-        fleet=FleetConfig(),
         uav_fleet_mode=UAVFleetModeConfig(),
         runtime=RuntimeSwitchesConfig(),
         refresh=RefreshPolicyConfig(),
@@ -241,6 +238,8 @@ def build_default_config(script_dir: str) -> AppConfig:
         debug=DebugFlagsConfig(),
         device_policy=DevicePolicyConfig(),
     )
+    if require_cuda_override is not None:
+        cfg.device_policy.require_cuda = bool(require_cuda_override)
     cfg.recompute_derived()
     cfg.validate()
     cfg.configure_device()
