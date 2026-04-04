@@ -25,7 +25,7 @@ class EnvironmentConfig:
 class MotionConfig:
     target_speed_km_h: float = 30.0    # 目标机动速度，单位 km/h
     uav_speed_km_h: float = 150.0      # 无人机巡航速度，单位 km/h
-    uav_scan_radius_km: float = 20.0   # 无人机传感器扫描半径，单位 km
+    uav_scan_radius_km: float = 10.0   # 无人机传感器扫描半径，单位 km
     uav_detection_probability: float = 0.1  # UAV 扫描命中后的剔除概率，范围 [0, 1]
 
 
