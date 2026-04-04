@@ -8,6 +8,8 @@
 """
 
 import os                       # 拼接路径、检查文件存在性。
+import sys                      # 获取当前 Python 解释器路径。
+import subprocess               # 调用图 11 生成脚本。
 import time                     # 统计仿真 wall time。
 from collections import deque   # 维护内存监控滑动窗口。
 
@@ -98,6 +100,7 @@ def main() -> None:
     assert cfg.device_runtime is not None                             # 设备信息必须已经初始化。
 
     print(f"Using CUDA device: {cfg.device_runtime.gpu_name}")       # 告知当前运行设备。
+    print(f"[PATH] loaded UAV path file: {resolved_path}")           # 明确提示当前实际使用的模板文件。
 
     # DataLogger 会在初始化时创建带时间戳的运行目录。
     data_logger = DataLogger(cfg)                                     # 负责记录轨迹和导出文件。
@@ -105,6 +108,7 @@ def main() -> None:
 
     particle_system = ParticleSystem(cfg)                             # 创建 GPU 粒子系统。
     fleet_controller = UAVFleetBuilder.from_custom_json(cfg, resolved_path)  # 创建 UAV 机群控制器。
+    print(f"[PATH] loaded UAV count: {len(fleet_controller.controllers)}")  # 明确提示实际加载的 UAV 数量。
     data_logger.init_uav_trace_fleet(fleet_controller.controllers)    # 初始化轨迹缓存。
 
     # 可视化初始化阶段读取一次初始密度，用于固定色条范围。
@@ -225,6 +229,19 @@ def main() -> None:
     if cfg.dynamic_replanning.enable:
         data_logger.export_replanning_events(fleet_controller)           # 导出重规划触发事件。
         data_logger.export_search_strategy(fleet_controller)             # 导出搜索策略对比数据。
+
+    figure11_script = os.path.join(script_dir, "pictures", "11.py")
+    figure11_output = os.path.join(script_dir, "pictures", "11.png")
+    if os.path.exists(figure11_script):
+        try:
+            subprocess.run(
+                [sys.executable, figure11_script, data_logger.run_results_dir, figure11_output],
+                check=True,
+            )
+        except Exception as exc:
+            print(f"[FIG11][WARN] failed to generate figure 11: {exc}")
+    else:
+        print(f"[FIG11][WARN] figure script not found: {figure11_script}")
     
     final_remaining = history_count[-1] if history_count else particle_system.active_count
     visualizer.save_final_scan_snapshot(                                 # 无论 realtime/video 开关如何都保存终态图。

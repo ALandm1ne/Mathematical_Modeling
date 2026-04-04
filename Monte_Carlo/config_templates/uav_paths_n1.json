@@ -1,0 +1,41 @@
+[
+  {
+    "_comment": "DEFAULT SINGLE-UAV TEMPLATE. UAV#0 starts immediately and covers the first half of the search region.",
+    "uav_id": 0,
+    "start_time_h": 0.0,
+    "start_pos_u": [20000, 0],
+    "segments": [
+      {
+        "segment_type": "line",
+        "end_point_u": [20000, 424000]
+      },
+      {
+        "segment_type": "arc",
+        "arc": {
+          "start_point_u": [20000, 424000],
+          "radius_u": 20000,
+          "is_clockwise": true,
+          "rotation_angle_deg": 180
+        }
+      },
+      {
+        "segment_type": "line",
+        "end_point_u": [60000, 20000]
+      },
+      {
+        "segment_type": "arc",
+        "arc": {
+          "start_point_u": [60000, 20000],
+          "radius_u": 20000,
+          "is_clockwise": false,
+          "rotation_angle_deg": 180
+        }
+      },
+      {
+        "segment_type": "line",
+        "end_point_u": [100000, 424000]
+      }
+    ],
+    "auto_gen_type": "figure3_n2"
+  }
+]

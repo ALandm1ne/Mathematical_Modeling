@@ -1,6 +1,6 @@
 [
   {
-    "_comment": "UAV#0 starts immediately and covers the first half of the search region.",
+    "_comment": "TWO-UAV TEMPLATE (not default). UAV#0 starts immediately and covers the first half of the search region.",
     "uav_id": 0,
     "start_time_h": 0.0,
     "start_pos_u": [20000, 0],
@@ -39,7 +39,7 @@
     "auto_gen_type": "figure3_n2"
   },
   {
-    "_comment": "UAV#1 starts 0.5h later and covers the second half of the search region.",
+    "_comment": "TWO-UAV TEMPLATE (not default). UAV#1 starts 0.5h later and covers the second half of the search region.",
     "uav_id": 1,
     "start_time_h": 0.5,
     "start_pos_u": [175749, 0],

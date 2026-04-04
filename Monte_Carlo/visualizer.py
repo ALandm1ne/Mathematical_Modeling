@@ -33,6 +33,9 @@ class SimVisualizer:
         import matplotlib.pyplot as plt
 
         self.plt = plt
+        self.plt.rcParams["font.family"] = "serif"
+        self.plt.rcParams["font.serif"] = ["Times New Roman", "Times", "Nimbus Roman"]
+        self.plt.rcParams["axes.unicode_minus"] = False
 
         if self.cfg.enable_visual_output:
             self._init_visual_elements()

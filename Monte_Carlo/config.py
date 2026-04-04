@@ -43,13 +43,13 @@ class UAVFleetModeConfig:
 @dataclass
 class RuntimeSwitchesConfig:
     """运行开关与演示模式配置。"""
-    realtime_visualization: bool = True                # 是否开启实时交互窗口
-    export_simulation_video: bool = True               # 是否导出仿真视频（mp4/gif）
-    export_uav_trajectory: bool = False                 # 是否导出 UAV 轨迹文件
+    realtime_visualization: bool = False                # 是否开启实时交互窗口
+    export_simulation_video: bool = False               # 是否导出仿真视频（mp4/gif）
+    export_uav_trajectory: bool = True                 # 是否导出 UAV 轨迹文件
 
     # API 演示模式：仅作为“额外路径来源”，不改变路径模式语义。
     api_demo_enable: bool = True                      # 是否启用演示路径来源
-    api_demo_json_path: str = "config_templates/uav_paths_n2.json"  # 演示路径 JSON（相对 script_dir）
+    api_demo_json_path: str = "config_templates/uav_paths_n1.json"  # 演示路径 JSON（相对 script_dir）
 
 
 @dataclass
@@ -115,7 +115,7 @@ class DynamicReplanningConfig:
     min_steps_between_replans: int = 10          # 同一UAV最少重规划间隔（步数）
     strip_evaluation_method: str = "particle_count"  # 条带评分方法：particle_count/probability
     use_max_score_heuristic: bool = True         # 是否采用"最大评分优先"启发式
-    best_strip_tolerance_ratio: float = 0.5     # 最优条带容差阈值：(best/adjacent_avg - 1) < 阈值时改选相邻条带
+    best_strip_tolerance_ratio: float = 0.01     # 最优条带容差阈值：(best/adjacent_avg - 1) < 阈值时改选相邻条带
     path_generation_timeout_s: float = 5.0       # 90度接入路径生成超时（秒）
     fallback_to_second_best: bool = True         # 若最优条带几何不可达，是否降级到次优
 

@@ -1,6 +1,6 @@
 [
   {
-    "_comment": "UAV#0 负责左侧 1/3 区域 x∈[0,102000]：从区域左下角右偏 1 个扫描半径出发，蛇形扫描到顶端结束。",
+    "_comment": "THREE-UAV TEMPLATE (not default). UAV#0 负责左侧 1/3 区域 x∈[0,102000]：从区域左下角右偏 1 个扫描半径出发，蛇形扫描到顶端结束。",
     "uav_id": 0,
     "start_time_h": 1.0,
     "start_pos_u": [20000, 0],
@@ -39,7 +39,7 @@
     "auto_gen_type": "custom"
   },
   {
-    "_comment": "UAV#1 负责中间 1/3 区域 x∈[102000,204000]。",
+    "_comment": "THREE-UAV TEMPLATE (not default). UAV#1 负责中间 1/3 区域 x∈[102000,204000]。",
     "uav_id": 1,
     "start_time_h": 2.0,
     "start_pos_u": [122000, 0],
@@ -78,7 +78,7 @@
     "auto_gen_type": "custom"
   },
   {
-    "_comment": "UAV#2 负责右侧 1/3 区域 x∈[204000,306000]。",
+    "_comment": "THREE-UAV TEMPLATE (not default). UAV#2 负责右侧 1/3 区域 x∈[204000,306000]。",
     "uav_id": 2,
     "start_time_h": 4.0,
     "start_pos_u": [224000, 0],
