@@ -22,6 +22,7 @@
             "approve": true,
             "matchCommandLine": true
         },
-        "/home/alandm1ne/code/Mathematical_Modeling/Monte_Carlo/.venv/bin/python": true
+        "/home/alandm1ne/code/Mathematical_Modeling/Monte_Carlo/.venv/bin/python": true,
+        "uv": true
     }
 }
