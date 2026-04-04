@@ -53,24 +53,24 @@ class StripEvaluator:
         strip_width_u = 2 * d.uav_scan_radius_u
         x_min, x_max = x_range_u
         
-        # 候选 x 采用“条带左边界 x”，窗口宽固定为 2r。
-        x_min_bin = max(0, int(x_min // grid_size_u))
-        x_max_left = max(x_min, x_max - strip_width_u)
-        x_max_bin = min(d.n_x_bins - 1, int(x_max_left // grid_size_u))
+        # 候选 x 采用“条带左边界 x”，允许左边界越过区域/整体边界；
+        # 但条带中心线仍必须落在责任区内。
+        x_min_left = x_min - d.uav_scan_radius_u
+        x_max_left = x_max - d.uav_scan_radius_u
+        x_min_bin = int(math.floor(x_min_left / grid_size_u))
+        x_max_bin = int(math.floor(x_max_left / grid_size_u))
         window_bins = max(1, int(round(strip_width_u / grid_size_u)))
         
         strip_scores = []
         
         for left_bin in range(x_min_bin, x_max_bin + 1):
-            if left_bin < 0 or left_bin >= density_grid.shape[1]:
-                continue
-
-            right_bin = min(density_grid.shape[1], left_bin + window_bins)
-            if right_bin <= left_bin:
-                continue
-
-            strip_density = int(np.sum(density_grid[:, left_bin:right_bin]))
             strip_left_x_u = int(left_bin * grid_size_u)
+            left_idx = max(0, int(math.floor(strip_left_x_u / grid_size_u)))
+            right_idx = min(density_grid.shape[1], int(math.ceil((strip_left_x_u + strip_width_u) / grid_size_u)))
+            if right_idx <= left_idx:
+                continue
+
+            strip_density = int(np.sum(density_grid[:, left_idx:right_idx]))
             strip_scores.append((strip_left_x_u, float(strip_density)))
         
         # 按得分降序排列
@@ -239,10 +239,12 @@ class ReplanningEngine:
         t = int(candidate_left_x_u + r_u)
         if direction_d * (t - current_scan_col_u) < 2 * r_u:
             return False
-        if t < r_u or t > area_width_u - r_u:
+        # 只约束 UAV 中心线在整体范围内，扫描半径可跨越整体边界。
+        if t < 0 or t > area_width_u:
             return False
         x_min, x_max = x_range_u
-        if t < x_min + r_u or t > x_max - r_u:
+        # 允许扫描圆盘覆盖到责任区外，但中心线必须留在责任区内。
+        if t < x_min or t > x_max:
             return False
         return True
 
@@ -251,31 +253,120 @@ class ReplanningEngine:
         current_scan_col_u: int,
         candidates: list[tuple[int, float]],
         x_range_u: tuple[int, int],
-    ) -> tuple[Optional[int], int]:
+        score_lookup_all: Optional[dict[int, float]] = None,
+    ) -> tuple[Optional[int], int, dict]:
         d = self.cfg.derived
         r_u = d.uav_scan_radius_u
         direction = self._choose_direction_from_top_candidate(current_scan_col_u, candidates, r_u)
+        adjacent_center_delta_u = 2 * r_u
 
-        def _pick(direction_d: int) -> Optional[int]:
+        def _apply_tolerance_switch(
+            best_left_x: int,
+            best_score: float,
+            direction_d: int,
+        ) -> tuple[int, dict]:
+            threshold = float(self.cfg.dynamic_replanning.best_strip_tolerance_ratio)
+            info = {
+                "switched": False,
+                "best_left_x": int(best_left_x),
+                "adjacent_avg": 0.0,
+                "relative_gain": 0.0,
+                "threshold": threshold,
+            }
+            if threshold <= 0:
+                return int(best_left_x), info
+
+            score_map = score_lookup_all if score_lookup_all is not None else {int(x): float(s) for x, s in candidates}
+
+            def _nearest_feasible_to_target_left(target_left_x: int) -> Optional[tuple[int, float]]:
+                nearest: Optional[tuple[int, float, int]] = None  # (x, score, |x-target|)
+                for nx, ns in score_map.items():
+                    if not self._is_feasible_strip(nx, current_scan_col_u, direction_d, r_u, d.area_width_u, x_range_u):
+                        continue
+                    dist = abs(int(nx) - int(target_left_x))
+                    if nearest is None or dist < nearest[2] or (dist == nearest[2] and int(nx) < nearest[0]):
+                        nearest = (int(nx), float(ns), int(dist))
+                if nearest is None:
+                    return None
+                return (nearest[0], nearest[1])
+
+            adjacent_items: list[tuple[int, float]] = []
+            # “相邻条带”定义为以当前扫描中心为基准的 ±2r，对应到最近可行网格条带。
+            for center_delta in (-adjacent_center_delta_u, adjacent_center_delta_u):
+                target_center_x = int(current_scan_col_u + center_delta)
+                target_left_x = int(target_center_x - r_u)
+                item = _nearest_feasible_to_target_left(target_left_x)
+                if item is None:
+                    continue
+                if all(existing_x != item[0] for existing_x, _ in adjacent_items):
+                    adjacent_items.append(item)
+
+            if not adjacent_items:
+                return int(best_left_x), info
+
+            adjacent_avg = float(sum(s for _, s in adjacent_items) / len(adjacent_items))
+            info["adjacent_avg"] = adjacent_avg
+            if adjacent_avg <= 0:
+                return int(best_left_x), info
+
+            relative_gain = float(best_score / adjacent_avg - 1.0)
+            info["relative_gain"] = relative_gain
+            if relative_gain >= threshold:
+                return int(best_left_x), info
+
+            # 容差内改选相邻条带：优先与当前方向一致的邻条带，否则取相邻中得分更高者。
+            preferred: list[tuple[int, float]] = []
+            for nx, ns in adjacent_items:
+                n_col = nx + r_u
+                if direction_d * (n_col - current_scan_col_u) > 0:
+                    preferred.append((nx, ns))
+
+            choices = preferred if preferred else adjacent_items
+            choices.sort(key=lambda it: (-it[1], abs((it[0] + r_u) - current_scan_col_u), it[0]))
+            selected_adj = int(choices[0][0])
+            info["switched"] = True
+            adj_detail = ", ".join(f"{ax}:{ascore:.1f}" for ax, ascore in sorted(adjacent_items, key=lambda t: t[0]))
+            print(
+                "[REPLANNING] tolerance-switch: "
+                f"best_x={best_left_x}, best_score={best_score:.1f}, "
+                f"adj_avg={adjacent_avg:.1f}, gain={relative_gain:.4f} < {threshold:.4f}, "
+                f"adjacent_2r=[{adj_detail}], use_adjacent_x={selected_adj}"
+            )
+            return selected_adj, info
+
+        def _pick(direction_d: int) -> tuple[Optional[int], dict]:
             feasible = [
                 (left_x, score)
                 for left_x, score in candidates
                 if self._is_feasible_strip(left_x, current_scan_col_u, direction_d, r_u, d.area_width_u, x_range_u)
             ]
             if not feasible:
-                return None
+                return None, {
+                    "switched": False,
+                    "best_left_x": -1,
+                    "adjacent_avg": 0.0,
+                    "relative_gain": 0.0,
+                    "threshold": float(self.cfg.dynamic_replanning.best_strip_tolerance_ratio),
+                }
             feasible.sort(key=lambda it: (-it[1], abs((it[0] + r_u) - current_scan_col_u), it[0]))
-            return int(feasible[0][0])
+            best_left_x, best_score = feasible[0]
+            return _apply_tolerance_switch(int(best_left_x), float(best_score), direction_d)
 
-        selected = _pick(direction)
+        selected, info = _pick(direction)
         if selected is not None:
-            return selected, direction
+            return selected, direction, info
 
-        selected = _pick(-direction)
+        selected, info = _pick(-direction)
         if selected is not None:
-            return selected, -direction
+            return selected, -direction, info
 
-        return None, direction
+        return None, direction, {
+            "switched": False,
+            "best_left_x": -1,
+            "adjacent_avg": 0.0,
+            "relative_gain": 0.0,
+            "threshold": float(self.cfg.dynamic_replanning.best_strip_tolerance_ratio),
+        }
 
     def _select_fallback_strip_left_x(
         self,
@@ -291,8 +382,9 @@ class ReplanningEngine:
 
         def _build(direction_d: int) -> Optional[int]:
             target_scan_col = current_scan_col_u + direction_d * (2 * r_u)
-            low = max(r_u, x_min + r_u)
-            high = min(d.area_width_u - r_u, x_max - r_u)
+            # 中心线不越责任区边界；扫描覆盖允许越界到相邻责任区。
+            low = max(0, x_min)
+            high = min(d.area_width_u, x_max)
             target_scan_col = min(high, max(low, target_scan_col))
             if abs(target_scan_col - current_scan_col_u) < 2 * r_u:
                 return None
@@ -346,7 +438,9 @@ class ReplanningEngine:
             
             # 评估该UAV负责区域内的条带
             x_range = uav.replanning_metadata.assigned_x_range_u
-            strip_scores = self.evaluator.evaluate_strips_by_density(density_grid, x_range)
+            r_u = self.cfg.derived.uav_scan_radius_u
+            eval_left_range = (x_range[0] - r_u, x_range[1] + r_u)
+            strip_scores = self.evaluator.evaluate_strips_by_density(density_grid, eval_left_range)
             
             if not strip_scores:
                 print(f"[REPLANNING] UAV#{uav_id}: no candidate strips found")
@@ -355,10 +449,11 @@ class ReplanningEngine:
             # 选择最优条带
             best_strips = self.evaluator.get_best_strips(strip_scores, count=10)
             current_scan_col_u = int(planned_pos_u[0])
-            selected_strip_left_x_u, _direction_d = self._select_best_feasible_strip(
+            selected_strip_left_x_u, _direction_d, tol_info = self._select_best_feasible_strip(
                 current_scan_col_u=current_scan_col_u,
                 candidates=best_strips,
                 x_range_u=x_range,
+                score_lookup_all={int(x): float(s) for x, s in strip_scores},
             )
 
             if selected_strip_left_x_u is None:
@@ -391,10 +486,25 @@ class ReplanningEngine:
                     candidate_strips=candidate_list,
                     selected_strip_id=(fallback_strip_left_x_u if fallback_strip_left_x_u is not None else -1),
                     new_segments_count=len(new_segments),
+                    tolerance_switched=bool(tol_info.get("switched", False)),
+                    tolerance_best_strip_id=int(tol_info.get("best_left_x", -1)),
+                    tolerance_adjacent_avg=float(tol_info.get("adjacent_avg", 0.0)),
+                    tolerance_relative_gain=float(tol_info.get("relative_gain", 0.0)),
+                    tolerance_threshold=float(tol_info.get("threshold", 0.0)),
                 )
                 continue
             
             # 生成接入路径
+            derived = self.cfg.derived
+            best_left_x_u = int(tol_info.get("best_left_x", -1))
+            selected_scan_col_u = int(selected_strip_left_x_u + derived.uav_scan_radius_u)
+            best_scan_col_u = int(best_left_x_u + derived.uav_scan_radius_u) if best_left_x_u >= 0 else -1
+            print(
+                f"[REPLANNING] UAV#{uav_id} select: current_scan_col={current_scan_col_u}, "
+                f"best_left_x={best_left_x_u}, best_scan_col={best_scan_col_u}, "
+                f"selected_left_x={selected_strip_left_x_u}, selected_scan_col={selected_scan_col_u}, "
+                f"switched={bool(tol_info.get('switched', False))}"
+            )
             try:
                 new_segments = self.path_gen.generate_90degree_approach(
                     current_line_x_u=current_scan_col_u,
@@ -424,4 +534,9 @@ class ReplanningEngine:
                 candidate_strips=candidate_list,
                 selected_strip_id=selected_strip_left_x_u,
                 new_segments_count=len(new_segments),
+                tolerance_switched=bool(tol_info.get("switched", False)),
+                tolerance_best_strip_id=int(tol_info.get("best_left_x", -1)),
+                tolerance_adjacent_avg=float(tol_info.get("adjacent_avg", 0.0)),
+                tolerance_relative_gain=float(tol_info.get("relative_gain", 0.0)),
+                tolerance_threshold=float(tol_info.get("threshold", 0.0)),
             )

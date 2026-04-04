@@ -115,6 +115,7 @@ class DynamicReplanningConfig:
     min_steps_between_replans: int = 10          # 同一UAV最少重规划间隔（步数）
     strip_evaluation_method: str = "particle_count"  # 条带评分方法：particle_count/probability
     use_max_score_heuristic: bool = True         # 是否采用"最大评分优先"启发式
+    best_strip_tolerance_ratio: float = 0.5     # 最优条带容差阈值：(best/adjacent_avg - 1) < 阈值时改选相邻条带
     path_generation_timeout_s: float = 5.0       # 90度接入路径生成超时（秒）
     fallback_to_second_best: bool = True         # 若最优条带几何不可达，是否降级到次优
 

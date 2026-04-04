@@ -176,6 +176,11 @@ class DataLogger:
                     "trigger_pos_y_km": event.trigger_pos_u[1] / self.cfg.numeric.scale,
                     "trigger_boundary": event.trigger_boundary,
                     "selected_strip_id": event.selected_strip_id,
+                    "tolerance_switched": event.tolerance_switched,
+                    "tolerance_best_strip_id": event.tolerance_best_strip_id,
+                    "tolerance_adjacent_avg": event.tolerance_adjacent_avg,
+                    "tolerance_relative_gain": event.tolerance_relative_gain,
+                    "tolerance_threshold": event.tolerance_threshold,
                     "num_candidates": len(event.candidate_strips),
                     "top_3_candidates": "|".join(
                         f"{cand[0]}({cand[1]})" for cand in event.candidate_strips[:3]
@@ -193,6 +198,8 @@ class DataLogger:
         fieldnames = [
             "uav_id", "step_idx", "time_h",
             "trigger_pos_x_km", "trigger_pos_y_km", "trigger_boundary",
+            "tolerance_switched", "tolerance_best_strip_id", "tolerance_adjacent_avg",
+            "tolerance_relative_gain", "tolerance_threshold",
             "selected_strip_id", "num_candidates", "top_3_candidates",
             "new_segments_count",
         ]
@@ -228,6 +235,10 @@ class DataLogger:
                     "time_h": event.time_h,
                     "selected_strip_id": event.selected_strip_id,
                     "boundary_type": event.trigger_boundary,
+                    "tolerance_switched": event.tolerance_switched,
+                    "tolerance_best_strip_id": event.tolerance_best_strip_id,
+                    "tolerance_relative_gain": event.tolerance_relative_gain,
+                    "tolerance_threshold": event.tolerance_threshold,
                     "is_high_priority": len(event.candidate_strips) > 0 and event.selected_strip_id == event.candidate_strips[0][0],  # noqa
                 })
         
@@ -239,7 +250,9 @@ class DataLogger:
         csv_path = os.path.join(self.run_results_dir, "search_strategy_dynamic.csv")
         fieldnames = [
             "uav_id", "replan_sequence", "step_idx", "time_h",
-            "selected_strip_id", "boundary_type", "is_high_priority",
+            "selected_strip_id", "boundary_type", "tolerance_switched",
+            "tolerance_best_strip_id", "tolerance_relative_gain", "tolerance_threshold",
+            "is_high_priority",
         ]
         
         with open(csv_path, "w", newline="", encoding="utf-8") as f:

@@ -93,6 +93,11 @@ class ReplanningTriggerEvent:
     candidate_strips: list[tuple[int, int, int]] = field(default_factory=list)  # [(strip_id, score, rank), ...]
     selected_strip_id: int = -1            # 最终选中的条带ID
     new_segments_count: int = 0            # 插入的新段数量
+    tolerance_switched: bool = False       # 是否因容差规则改选了相邻条带
+    tolerance_best_strip_id: int = -1      # 容差判定前的best条带
+    tolerance_adjacent_avg: float = 0.0    # 相邻可用条带平均得分
+    tolerance_relative_gain: float = 0.0   # best/adj_avg - 1
+    tolerance_threshold: float = 0.0       # 容差阈值
 
 
 @dataclass
@@ -524,6 +529,11 @@ class UAVController:
         candidate_strips: list[tuple[int, int, int]],
         selected_strip_id: int,
         new_segments_count: int = 0,
+        tolerance_switched: bool = False,
+        tolerance_best_strip_id: int = -1,
+        tolerance_adjacent_avg: float = 0.0,
+        tolerance_relative_gain: float = 0.0,
+        tolerance_threshold: float = 0.0,
     ) -> None:
         """记录一次重规划触发事件"""
         event = ReplanningTriggerEvent(
@@ -534,6 +544,11 @@ class UAVController:
             candidate_strips=candidate_strips,
             selected_strip_id=selected_strip_id,
             new_segments_count=new_segments_count,
+            tolerance_switched=bool(tolerance_switched),
+            tolerance_best_strip_id=int(tolerance_best_strip_id),
+            tolerance_adjacent_avg=float(tolerance_adjacent_avg),
+            tolerance_relative_gain=float(tolerance_relative_gain),
+            tolerance_threshold=float(tolerance_threshold),
         )
         self.replanning_metadata.replan_events.append(event)
         self.replanning_metadata.last_replan_step = step_idx
