@@ -91,3 +91,25 @@ fleet = UAVFleetBuilder.from_path_specs(cfg, path_specs)
 ```bash
 uv run python test_custom_paths.py
 ```
+
+## Figure 3 批量作图
+
+生成多无人机协同条带覆盖路径图（N=1..8）：
+
+```bash
+uv run python pictures/3.py
+```
+
+输出文件位于 `pictures/` 目录：
+
+- `3_1.png`
+- `3_2.png`
+- `3_3.png`
+- `3_4.png`
+- `3_5.png`
+- `3_6.png`
+- `3_7.png`
+- `3_8.png`
+- `3_metrics.csv`（公式中间量：`d_i^{in}`、`W_i^*`、`T_N^*`）
+
+说明：Figure 3 使用当前仿真一致的圆弧转弯口径，转弯半径取扫描半径 `R_turn = w`。

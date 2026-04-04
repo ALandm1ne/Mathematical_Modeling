@@ -21,6 +21,7 @@
         "/^cd /home/alandm1ne/code/Mathematical_Modeling/Monte_Carlo && source \\.venv/bin/activate && python - <<'PY'\nfrom config import build_default_config\ncfg = build_default_config\\('\\.'\\)\nprint\\(cfg\\.runtime\\.api_demo_enable\\)\nprint\\(cfg\\.runtime\\.api_demo_realtime_visualization\\)\nprint\\(cfg\\.uav_fleet_mode\\.strict_path_validation\\)\nPY$/": {
             "approve": true,
             "matchCommandLine": true
-        }
+        },
+        "/home/alandm1ne/code/Mathematical_Modeling/Monte_Carlo/.venv/bin/python": true
     }
 }

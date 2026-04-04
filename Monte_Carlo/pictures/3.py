@@ -1,405 +1,427 @@
-"""Figure 3: Multi-UAV collaborative strip-coverage path map.
+"""Figure 3: Multi-UAV cooperative strip coverage (batch N=1..8).
 
-运行:
-    uv run pictures/figure3_multi_uav_strip_total.py
-或:
-    python pictures/figure3_multi_uav_strip_total.py
-
-输出:
-    pictures/Fig3_Multi_UAV_Strip_Coverage.png
+Conventions:
+1) Subregion widths are solved by the equal-time partition formula.
+2) Transit segments are dashed lines.
+3) Scanning segments follow Y-axis boustrophedon motion.
+4) Top/bottom turns are semicircular arcs with turning radius R_turn = w.
+5) Outputs include 3_1.png ... 3_8.png and formula metrics CSV.
 """
 
 from __future__ import annotations
 
 import csv
-import os
-import re
-import sys
+import logging
+import math
 from dataclasses import dataclass
+from pathlib import Path
 
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.lines import Line2D
 from matplotlib.patches import Rectangle
 
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
-
-from config import build_default_config
-
-
-# Journal-style typography: prefer Times New Roman.
-mpl.rcParams["font.family"] = "serif"
-mpl.rcParams["font.serif"] = ["Times New Roman", "Liberation Serif", "DejaVu Serif"]
-mpl.rcParams["axes.unicode_minus"] = False
-
-
-@dataclass
-class Figure3Style:
-    title: str = "Figure 3. Multi-UAV Collaborative Strip-Coverage Mission Paths"
-    output_name: str = "3.png"
-    figure_size: tuple[float, float] = (12.5, 9.5)
-    dpi: int = 320
-
-
-def _sample_arc_points(
-    center_x: float,
-    center_y: float,
-    radius: float,
-    theta_start: float,
-    theta_end: float,
-    n: int = 40,
-) -> np.ndarray:
-    """按角度采样圆弧点，角度单位为弧度。"""
-    thetas = np.linspace(theta_start, theta_end, n)
-    x = center_x + radius * np.cos(thetas)
-    y = center_y + radius * np.sin(thetas)
-    return np.column_stack((x, y))
-
-
-def _build_serpentine_path(
-    x_min: float,
-    x_max: float,
-    y_min: float,
-    y_max: float,
-    lane_pitch: float,
-) -> np.ndarray:
-    """Generate a serpentine strip path.
-
-    Design constraints:
-    1) Entry point lies exactly on the boundary (top boundary y=y_min).
-    2) U-turn arcs are outside the target boundary (y<y_min or y>y_max).
-    """
-    width = x_max - x_min
-    if width <= 1e-6:
-        return np.zeros((0, 2), dtype=np.float64)
-
-    margin = max(3.0, lane_pitch * 0.30)
-    xs = np.arange(x_min + margin, x_max - margin + 1e-9, lane_pitch)
-    if xs.size < 2:
-        xs = np.array([x_min + margin, x_max - margin], dtype=np.float64)
-
-    points: list[tuple[float, float]] = []
-
-    # Entry point exactly on the top boundary.
-    points.append((float(xs[0]), y_min))
-
-    go_down = True
-    for i, x in enumerate(xs):
-        start_y = y_min if go_down else y_max
-        end_y = y_max if go_down else y_min
-
-        # Keep lane endpoints on the boundary.
-        if points[-1] != (float(x), start_y):
-            points.append((float(x), start_y))
-        points.append((float(x), end_y))
-
-        if i == len(xs) - 1:
-            break
-
-        x_next = float(xs[i + 1])
-        r = abs(x_next - float(x)) / 2.0
-        cx = (float(x) + x_next) / 2.0
-
-        if go_down:
-            # Bottom turn outside boundary: y >= y_max.
-            arc = _sample_arc_points(
-                center_x=cx,
-                center_y=y_max,
-                radius=r,
-                theta_start=np.pi,
-                theta_end=0.0,
-            )
-        else:
-            # Top turn outside boundary: y <= y_min.
-            arc = _sample_arc_points(
-                center_x=cx,
-                center_y=y_min,
-                radius=r,
-                theta_start=np.pi,
-                theta_end=2.0 * np.pi,
-            )
-
-        # Skip the first arc point to avoid duplicating the current boundary endpoint.
-        points.extend([(float(px), float(py)) for px, py in arc[1:]])
-        go_down = not go_down
-
-    return np.asarray(points, dtype=np.float64)
-
-
-def _find_latest_trajectory_csv(results_root: str) -> str:
-    """Find the newest run directory containing uav_trajectory.csv."""
-    if not os.path.isdir(results_root):
-        raise FileNotFoundError(f"Results directory not found: {results_root}")
-
-    ts_pat = re.compile(r"^\d{8}_\d{6}$")
-    candidates: list[tuple[str, str]] = []
-    for name in os.listdir(results_root):
-        run_dir = os.path.join(results_root, name)
-        if not (os.path.isdir(run_dir) and ts_pat.match(name)):
-            continue
-        csv_path = os.path.join(run_dir, "uav_trajectory.csv")
-        if os.path.isfile(csv_path):
-            candidates.append((name, csv_path))
-
-    if not candidates:
-        raise FileNotFoundError(f"No uav_trajectory.csv found under: {results_root}")
-
-    candidates.sort(key=lambda x: x[0])
-    return candidates[-1][1]
-
-
-def _load_trajectories_from_csv(csv_path: str) -> dict[int, np.ndarray]:
-    """Load trajectories grouped by UAV id, sorted by step."""
-    grouped: dict[int, list[tuple[int, float, float]]] = {}
-
-    with open(csv_path, "r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            uid = int(row["uav_id"])
-            step = int(float(row["step"]))
-            x_km = float(row["x_km"])
-            y_km = float(row["y_km"])
-            grouped.setdefault(uid, []).append((step, x_km, y_km))
-
-    trajectories: dict[int, np.ndarray] = {}
-    for uid, recs in grouped.items():
-        recs.sort(key=lambda t: t[0])
-        xy = np.asarray([(r[1], r[2]) for r in recs], dtype=np.float64)
-        trajectories[uid] = xy
-    return trajectories
-
-
-def _intersect_line_with_rect(
-    p0: tuple[float, float],
-    p1: tuple[float, float],
-    x_min: float,
-    x_max: float,
-    y_min: float,
-    y_max: float,
-) -> tuple[float, float] | None:
-    """Return first intersection point from p0->p1 with rectangle boundary."""
-    x0, y0 = p0
-    x1, y1 = p1
-    dx = x1 - x0
-    dy = y1 - y0
-
-    cands: list[tuple[float, tuple[float, float]]] = []
-
-    def add_t(t: float, x: float, y: float) -> None:
-        if 0.0 <= t <= 1.0 and (x_min - 1e-9) <= x <= (x_max + 1e-9) and (y_min - 1e-9) <= y <= (y_max + 1e-9):
-            cands.append((t, (x, y)))
-
-    if abs(dx) > 1e-12:
-        t = (x_min - x0) / dx
-        add_t(t, x_min, y0 + t * dy)
-        t = (x_max - x0) / dx
-        add_t(t, x_max, y0 + t * dy)
-
-    if abs(dy) > 1e-12:
-        t = (y_min - y0) / dy
-        add_t(t, x0 + t * dx, y_min)
-        t = (y_max - y0) / dy
-        add_t(t, x0 + t * dx, y_max)
-
-    if not cands:
-        return None
-
-    cands.sort(key=lambda z: z[0])
-    return cands[0][1]
-
-
-def _point_inside_rect(x: float, y: float, x_min: float, x_max: float, y_min: float, y_max: float) -> bool:
-    return (x_min <= x <= x_max) and (y_min <= y <= y_max)
-
-
-def _add_path_arrows(ax, path_xy: np.ndarray, color, every_n: int = 70) -> None:
-    """沿路径均匀加方向箭头。"""
-    if path_xy.shape[0] < 3:
-        return
-
-    for i in range(every_n, path_xy.shape[0] - 1, every_n):
-        p0 = path_xy[i - 1]
-        p1 = path_xy[i + 1]
-        ax.annotate(
-            "",
-            xy=(p1[0], p1[1]),
-            xytext=(p0[0], p0[1]),
-            arrowprops=dict(
-                arrowstyle="-|>",
-                lw=1.0,
-                color=color,
-                mutation_scale=9,
-                alpha=0.9,
-            ),
-            zorder=4,
-        )
-
-
-def plot_figure3_total() -> str:
-    cfg = build_default_config(script_dir=PROJECT_ROOT, require_cuda_override=False)
-    style = Figure3Style()
-
-    # Target-particle motion bounds (this is what the black frame must represent).
-    particle_x_min = 0.0
-    particle_y_min = 0.0
-    particle_w = float(cfg.environment.area_width_km)
-    particle_h = float(cfg.environment.area_height_km)
-    particle_x_max = particle_x_min + particle_w
-    particle_y_max = particle_y_min + particle_h
-
-    area_w = particle_w
-    area_h = particle_h
-
-    latest_csv = _find_latest_trajectory_csv(cfg.results_root_dir)
-    trajectories = _load_trajectories_from_csv(latest_csv)
-    if not trajectories:
-        raise RuntimeError(f"No trajectory records in: {latest_csv}")
-    n_uav = len(trajectories)
-
-    # If the configured base lies inside the search region, shift it outside to show ferry segments clearly.
-    base_x = float(cfg.plot.airport_x_km)
-    base_y = float(cfg.plot.airport_y_km)
-    if 0.0 <= base_x <= area_w and 0.0 <= base_y <= area_h:
-        base_x = -0.22 * area_w
-        base_y = -0.18 * area_h
-
-    colors = mpl.colormaps.get_cmap("tab10").resampled(max(2, n_uav))
-    fig, ax = plt.subplots(figsize=style.figure_size, dpi=style.dpi)
-
-    # Black frame: target-particle motion range.
-    ax.add_patch(
-        Rectangle(
-            (particle_x_min, particle_y_min),
-            particle_w,
-            particle_h,
-            fill=False,
-            lw=2.2,
-            ec="black",
-            label="Target Particle Motion Range",
-        )
-    )
-
-    # Base location (red star marker).
-    ax.scatter([base_x], [base_y], marker="*", s=260, c="red", edgecolors="black", linewidths=0.8, zorder=6)
-    ax.annotate(
-        "Base (Wenzhou Longwan Airport)",
-        xy=(base_x, base_y),
-        xytext=(10, 8),
-        textcoords="offset points",
-        color="red",
-        fontsize=10,
-        weight="bold",
-    )
-
-    legend_handles = []
-    legend_labels = []
-
-    for draw_idx, uid in enumerate(sorted(trajectories.keys())):
-        c = colors(draw_idx)
-
-        path_xy = trajectories[uid]
-        if path_xy.shape[0] == 0:
-            continue
-
-        # Entry point: first intersection of base->first recorded point with particle boundary.
-        first_x, first_y = float(path_xy[0, 0]), float(path_xy[0, 1])
-        entry = _intersect_line_with_rect(
-            (base_x, base_y),
-            (first_x, first_y),
-            particle_x_min,
-            particle_x_max,
-            particle_y_min,
-            particle_y_max,
-        )
-
-        # Fallback: if line does not intersect (rare), use first in-bound trajectory sample.
-        if entry is None:
-            inside_idx = None
-            for i in range(path_xy.shape[0]):
-                px, py = float(path_xy[i, 0]), float(path_xy[i, 1])
-                if _point_inside_rect(px, py, particle_x_min, particle_x_max, particle_y_min, particle_y_max):
-                    inside_idx = i
-                    break
-            if inside_idx is None:
-                continue
-            entry_x, entry_y = float(path_xy[inside_idx, 0]), float(path_xy[inside_idx, 1])
-            search_xy = path_xy[inside_idx:]
-        else:
-            entry_x, entry_y = entry
-            # Ensure solid search path starts exactly from boundary entry.
-            search_xy = np.vstack([np.array([[entry_x, entry_y]], dtype=np.float64), path_xy])
-
-        # Ferry segment (dashed).
-        ferry_line, = ax.plot(
-            [base_x, entry_x],
-            [base_y, entry_y],
-            linestyle="--",
-            lw=1.6,
-            color=c,
-            alpha=0.95,
-            zorder=2,
-        )
-        ax.annotate(
-            "",
-            xy=(entry_x, entry_y),
-            xytext=(base_x, base_y),
-            arrowprops=dict(arrowstyle="->", lw=1.3, color=c),
-            zorder=3,
-        )
-
-        # Entry point.
-        ax.scatter([entry_x], [entry_y], s=52, color=c, edgecolors="white", linewidths=0.8, zorder=6)
-        ax.annotate(
-            f"Entry Point UAV{uid + 1}",
-            xy=(entry_x, entry_y),
-            xytext=(7, -14),
-            textcoords="offset points",
-            fontsize=8.8,
-            color=c,
-        )
-
-        # Strip-search segment (solid).
-        search_line, = ax.plot(search_xy[:, 0], search_xy[:, 1], linestyle="-", lw=2.0, color=c, zorder=4)
-        _add_path_arrows(ax, search_xy, color=c, every_n=80)
-
-        legend_handles.extend([search_line, ferry_line])
-        legend_labels.extend([f"UAV{uid + 1} Strip-Search Segment", f"UAV{uid + 1} Ferry Segment"])
-
-        x_mid = float(np.median(search_xy[:, 0]))
-        y_mid = float(np.median(search_xy[:, 1]))
-        ax.text(x_mid, y_mid, f"UAV{uid + 1}", color=c, fontsize=12, alpha=0.65, ha="center")
-
-    ax.set_aspect("equal", adjustable="box")
-    ax.invert_yaxis()  # Positive y points south.
-    ax.grid(True, linestyle=":", alpha=0.35)
-    ax.set_title(style.title, fontsize=15, pad=12)
-    ax.set_xlabel("x (km, positive to the east)")
-    ax.set_ylabel("y (km, positive to the south)")
-
-    # Axis margins keep base and ferry segments fully visible.
-    ax.set_xlim(min(base_x, 0.0) - 0.08 * area_w, area_w + 0.10 * area_w)
-    ax.set_ylim(min(base_y, 0.0) - 0.10 * area_h, area_h + 0.08 * area_h)
-
-    # Unified legend, including global elements.
-    area_handle = Line2D([0], [0], color="black", lw=2.2)
-    base_handle = Line2D([0], [0], marker="*", color="w", markerfacecolor="red", markeredgecolor="black", markersize=12, linestyle="None")
-    entry_handle = Line2D([0], [0], marker="o", color="w", markerfacecolor="gray", markersize=7, linestyle="None")
-
-    all_handles = [area_handle, base_handle, entry_handle] + legend_handles
-    all_labels = ["Target Particle Motion Range", "Base (Wenzhou Longwan Airport)", "Entry Point"] + legend_labels
-    ax.legend(all_handles, all_labels, loc="upper center", bbox_to_anchor=(0.5, -0.14), ncol=3, fontsize=9, frameon=True)
-
-    fig.tight_layout()
-    output_path = os.path.join(CURRENT_DIR, style.output_name)
-    fig.savefig(output_path, dpi=style.dpi, bbox_inches="tight")
-    plt.close(fig)
-    return output_path
+
+plt.rcParams["font.family"] = "serif"
+plt.rcParams["font.serif"] = ["Times New Roman", "DejaVu Serif"]
+plt.rcParams["axes.unicode_minus"] = False
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+
+
+@dataclass(frozen=True)
+class Figure3Params:
+	x_min: float = 0.0
+	x_max: float = 306.0
+	y_min: float = 0.0
+	y_max: float = 444.0
+	base_x: float = -314.0
+	base_y: float = -323.0
+	uav_speed_km_h: float = 150.0
+	scan_radius_km: float = 20.0
+	kappa: float = 1.0
+
+	@property
+	def area_width(self) -> float:
+		return self.x_max - self.x_min
+
+	@property
+	def area_length(self) -> float:
+		return self.y_max - self.y_min
+
+
+def _entry_offset(width: float, w: float) -> float:
+	# 入口点偏置不超过子区中线，避免窄子区越界。
+	return min(w, 0.5 * width)
+
+
+def _enforce_width_constraints(widths: np.ndarray, total_width: float, min_width: float) -> np.ndarray:
+	n = len(widths)
+	if n == 0:
+		return widths
+	if n * min_width >= total_width:
+		return np.full(n, total_width / n, dtype=float)
+
+	x = np.maximum(widths.astype(float), min_width)
+	excess = float(np.sum(x) - total_width)
+	if excess <= 1e-9:
+		scale = total_width / float(np.sum(x))
+		return x * scale
+
+	for _ in range(20):
+		free = x > (min_width + 1e-9)
+		if not np.any(free):
+			return np.full(n, total_width / n, dtype=float)
+
+		reducible = x[free] - min_width
+		reducible_sum = float(np.sum(reducible))
+		if reducible_sum <= 1e-12:
+			return np.full(n, total_width / n, dtype=float)
+
+		delta = excess * reducible / reducible_sum
+		x[free] -= np.minimum(reducible, delta)
+		x = np.maximum(x, min_width)
+		excess = float(np.sum(x) - total_width)
+		if abs(excess) <= 1e-6:
+			break
+
+	x *= total_width / float(np.sum(x))
+	return x
+
+
+def solve_partition_widths(params: Figure3Params, n_uav: int, max_iter: int = 40) -> dict:
+	w = params.scan_radius_km
+	v = params.uav_speed_km_h
+	L = params.area_length
+	W = params.area_width
+	kappa = params.kappa
+
+	widths = np.full(n_uav, W / n_uav, dtype=float)
+	min_width = min(2.0 * w, 0.5 * W / n_uav)
+	x_edges = np.linspace(params.x_min, params.x_max, n_uav + 1)
+
+	d_in = np.zeros(n_uav, dtype=float)
+	t_star = 0.0
+
+	for _ in range(max_iter):
+		for i in range(n_uav):
+			seg_w = widths[i]
+			entry_x = x_edges[i] + _entry_offset(seg_w, w)
+			d_in[i] = math.hypot(entry_x - params.base_x, params.y_min - params.base_y)
+
+		t_star = (np.mean(d_in) + (L * W * kappa) / (n_uav * w)) / v
+		raw = (w / (L * kappa)) * (v * t_star - d_in)
+		raw = np.maximum(raw, 1e-6)
+		next_widths = _enforce_width_constraints(raw, W, min_width)
+
+		if np.max(np.abs(next_widths - widths)) <= 1e-5:
+			widths = next_widths
+			break
+
+		widths = next_widths
+		x_edges[0] = params.x_min
+		x_edges[1:] = params.x_min + np.cumsum(widths)
+
+	x_edges[0] = params.x_min
+	x_edges[1:] = params.x_min + np.cumsum(widths)
+	x_edges[-1] = params.x_max
+	x_edges = np.maximum.accumulate(x_edges)
+
+	return {
+		"widths": widths,
+		"x_edges": x_edges,
+		"d_in": d_in,
+		"t_star": t_star,
+	}
+
+
+def _strip_centers(x_left: float, x_right: float, turn_radius: float) -> list[float]:
+	usable = x_right - x_left
+	if usable <= 2.0 * turn_radius + 1e-9:
+		return [0.5 * (x_left + x_right)]
+
+	start = x_left + turn_radius
+	end = x_right - turn_radius
+	centers: list[float] = []
+	x = start
+	step = 2.0 * turn_radius
+	while x <= end + 1e-9:
+		centers.append(x)
+		x += step
+
+	# If the last strip cannot cover the right edge, add one more strip center.
+	# This may exceed the allocated subregion, but guarantees full coverage.
+	if centers and (centers[-1] + turn_radius < x_right - 1e-9):
+		centers.append(centers[-1] + step)
+	if not centers:
+		centers.append(0.5 * (x_left + x_right))
+	return centers
+
+
+def _arc_points(cx: float, cy: float, r: float, theta_start: float, theta_end: float, n_pts: int = 60):
+	theta = np.linspace(theta_start, theta_end, n_pts)
+	return cx + r * np.cos(theta), cy + r * np.sin(theta)
+
+
+def _connection_length(dx: float, turn_radius: float) -> float:
+	if abs(dx - 2.0 * turn_radius) <= 1e-6:
+		return math.pi * turn_radius
+	return abs(dx)
+
+
+def compute_uav_timing(params: Figure3Params, xs: list[float]) -> dict:
+	v = params.uav_speed_km_h
+	L = params.area_length
+	r = params.scan_radius_km
+	entry_x = xs[0]
+
+	transit_km = math.hypot(entry_x - params.base_x, params.y_min - params.base_y)
+	scan_km = len(xs) * L
+	for i in range(len(xs) - 1):
+		scan_km += _connection_length(xs[i + 1] - xs[i], r)
+
+	total_km = transit_km + scan_km
+	return {
+		"entry_x": entry_x,
+		"transit_km": transit_km,
+		"scan_km": scan_km,
+		"total_km": total_km,
+		"t_in_h": transit_km / v,
+		"t_done_h": total_km / v,
+	}
+
+
+def generate_uav_path(
+	params: Figure3Params,
+	x_left: float,
+	x_right: float,
+	color: tuple,
+	ax,
+	xs: list[float] | None = None,
+) -> list[float]:
+	y0 = params.y_min
+	y1 = params.y_max
+	r = params.scan_radius_km
+
+	if xs is None:
+		xs = _strip_centers(x_left, x_right, r)
+	entry_x = xs[0]
+
+	# 航渡段：基地到入口点。
+	ax.plot([params.base_x, entry_x], [params.base_y, y0], linestyle="--", color=color, linewidth=1.4, alpha=0.9)
+
+	going_up = True
+	for i, x in enumerate(xs):
+		if going_up:
+			ax.plot([x, x], [y0, y1], linestyle="-", color=color, linewidth=2.0)
+			ax.annotate("", xy=(x, 0.60 * y1), xytext=(x, 0.40 * y1), arrowprops=dict(arrowstyle="->", color=color, lw=1.2))
+		else:
+			ax.plot([x, x], [y1, y0], linestyle="-", color=color, linewidth=2.0)
+			ax.annotate("", xy=(x, 0.40 * y1), xytext=(x, 0.60 * y1), arrowprops=dict(arrowstyle="->", color=color, lw=1.2))
+
+		if i == len(xs) - 1:
+			break
+
+		x_next = xs[i + 1]
+		dx = x_next - x
+		if abs(dx - 2.0 * r) <= 1e-6:
+			if going_up:
+				cx, cy = x + r, y1
+				arc_x, arc_y = _arc_points(cx, cy, r, math.pi, 0.0)
+			else:
+				cx, cy = x + r, y0
+				arc_x, arc_y = _arc_points(cx, cy, r, math.pi, 2.0 * math.pi)
+			ax.plot(arc_x, arc_y, linestyle="-", color=color, linewidth=2.0)
+		else:
+			# 末端宽度非 2R 时，用贴边直线衔接，避免几何不连续。
+			y_edge = y1 if going_up else y0
+			ax.plot([x, x_next], [y_edge, y_edge], linestyle="-", color=color, linewidth=2.0)
+
+		going_up = not going_up
+
+	return xs
+
+
+def render_for_n(params: Figure3Params, n_uav: int, output_path: Path, metrics_rows: list[dict]) -> None:
+	solved = solve_partition_widths(params, n_uav)
+	widths = solved["widths"]
+	x_edges = solved["x_edges"]
+	d_in = solved["d_in"]
+	t_star = solved["t_star"]
+
+	fig, ax = plt.subplots(figsize=(11, 9))
+	ax.add_patch(
+		Rectangle(
+			(params.x_min, params.y_min),
+			params.area_width,
+			params.area_length,
+			linewidth=1.8,
+			edgecolor="black",
+			facecolor="#f8fbff",
+			alpha=0.95,
+			zorder=0.0,
+		)
+	)
+
+	cmap = plt.get_cmap("tab10", n_uav)
+	timing_annotations: list[tuple[int, tuple, float, float]] = []
+	for b in x_edges[1:-1]:
+		ax.axvline(b, color="gray", linestyle=":", linewidth=0.9, alpha=0.75, zorder=1.5)
+		ax.text(
+			b,
+			params.y_min - 8.0,
+			f"x={b:.1f} km",
+			rotation=90,
+			va="top",
+			ha="center",
+			fontsize=8,
+			color="dimgray",
+			bbox=dict(boxstyle="round", facecolor="white", alpha=0.65, edgecolor="none"),
+			clip_on=False,
+		)
+
+	for i in range(n_uav):
+		color = cmap(i)
+		# Fill each assigned partition with UAV-matched background color.
+		ax.add_patch(
+			Rectangle(
+				(x_edges[i], params.y_min),
+				x_edges[i + 1] - x_edges[i],
+				params.area_length,
+				linewidth=0.0,
+				facecolor=color,
+				alpha=0.48,
+				zorder=1.0,
+			)
+		)
+		xs = _strip_centers(x_edges[i], x_edges[i + 1], params.scan_radius_km)
+		timing = compute_uav_timing(params, xs)
+		generate_uav_path(params, x_edges[i], x_edges[i + 1], color, ax, xs=xs)
+
+		label_x = timing["entry_x"]
+		ax.text(
+			label_x,
+			params.y_min + 10.0,
+			f"UAV {i + 1}",
+			color=color,
+			fontsize=9,
+			fontweight="bold",
+			ha="center",
+			va="bottom",
+			zorder=3.0,
+		)
+
+		timing_annotations.append((i + 1, color, timing["t_in_h"], timing["t_done_h"]))
+
+		metrics_rows.append(
+			{
+				"N": n_uav,
+				"uav_id": i,
+				"d_in_km": float(d_in[i]),
+				"W_i_km": float(widths[i]),
+				"x_left_km": float(x_edges[i]),
+				"x_right_km": float(x_edges[i + 1]),
+				"T_star_h": float(t_star),
+				"t_in_h": float(timing["t_in_h"]),
+				"t_done_h": float(timing["t_done_h"]),
+			}
+		)
+
+	ax.scatter(params.base_x, params.base_y, marker="*", s=150, color="black", label="Base Station")
+
+	formula_text = (
+		r"$W_i^*=\frac{w}{L\kappa}(v_uT_N^*-d_i^{in})$" + "\n"
+		r"$T_N^*=\frac{1}{v_u}(\frac{1}{N}\sum d_j^{in}+\frac{LW\kappa}{Nw})$"
+	)
+	ax.text(
+		0.02,
+		0.98,
+		formula_text,
+		transform=ax.transAxes,
+		va="top",
+		ha="left",
+		fontsize=10,
+		bbox=dict(boxstyle="round", facecolor="white", alpha=0.85, edgecolor="gray"),
+	)
+
+	ax.set_title(f"Figure 3 Multi-UAV Cooperative Strip Coverage (N={n_uav})", fontsize=14)
+	ax.set_xlabel("X (km)")
+	ax.set_ylabel("Y (km)")
+	ax.set_xlim(params.base_x - 20.0, params.x_max + 20.0)
+	ax.set_ylim(params.base_y - 20.0, params.y_max + 20.0)
+	ax.set_aspect("equal", adjustable="box")
+	ax.grid(alpha=0.25, linestyle="--")
+	ax.legend(loc="lower right")
+
+	ax.text(
+		1.02,
+		0.98,
+		"UAV Timing (from base)",
+		transform=ax.transAxes,
+		ha="left",
+		va="top",
+		fontsize=9,
+		fontweight="bold",
+		clip_on=False,
+	)
+	for idx, (uav_id, color, t_in_h, t_done_h) in enumerate(timing_annotations):
+		y = 0.93 - 0.085 * idx
+		ax.text(
+			1.02,
+			y,
+			f"UAV {uav_id}: t_in={t_in_h:.2f} h, t_done={t_done_h:.2f} h",
+			transform=ax.transAxes,
+			ha="left",
+			va="top",
+			fontsize=8,
+			color=color,
+			bbox=dict(boxstyle="round", facecolor="white", alpha=0.75, edgecolor="none"),
+			clip_on=False,
+		)
+
+	fig.text(
+		0.5,
+		0.02,
+		"Note: Arc-turn convention follows the current simulator, with turning radius R_turn = w.",
+		ha="center",
+		fontsize=10,
+	)
+
+	fig.tight_layout(rect=(0.0, 0.05, 0.84, 1.0))
+	fig.savefig(output_path, dpi=220)
+	plt.close(fig)
+
+
+def export_metrics_csv(rows: list[dict], out_csv: Path) -> None:
+	fields = [
+		"N",
+		"uav_id",
+		"d_in_km",
+		"W_i_km",
+		"x_left_km",
+		"x_right_km",
+		"T_star_h",
+		"t_in_h",
+		"t_done_h",
+	]
+	with out_csv.open("w", newline="", encoding="utf-8") as f:
+		writer = csv.DictWriter(f, fieldnames=fields)
+		writer.writeheader()
+		writer.writerows(rows)
+
+
+def main() -> None:
+	params = Figure3Params()
+	out_dir = Path(__file__).resolve().parent
+	metrics: list[dict] = []
+
+	for n in range(1, 9):
+		out_png = out_dir / f"3_{n}.png"
+		render_for_n(params, n, out_png, metrics)
+		print(f"[Figure3] saved: {out_png}")
+
+	metrics_csv = out_dir / "3_metrics.csv"
+	export_metrics_csv(metrics, metrics_csv)
+	print(f"[Figure3] metrics: {metrics_csv}")
 
 
 if __name__ == "__main__":
-    out = plot_figure3_total()
-    print(f"Saved Figure 3 to: {out}")
+	main()
