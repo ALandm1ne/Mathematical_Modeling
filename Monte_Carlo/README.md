@@ -50,7 +50,7 @@ from config import build_default_config
 from core.uav_controller import UAVFleetBuilder
 
 cfg = build_default_config(".", require_cuda_override=False)
-fleet = UAVFleetBuilder.from_custom_json(cfg, "config_templates/multi_uav_paths.json")
+fleet = UAVFleetBuilder.from_custom_json(cfg, "config_templates/uav_paths.json")
 ```
 
 ### 编程式构造路径

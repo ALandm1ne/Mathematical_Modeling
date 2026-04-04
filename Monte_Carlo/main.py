@@ -46,12 +46,10 @@ def _resolve_external_path_source(cfg, script_dir: str) -> str | None:
         msg = (
             "[PATH][WARN] multiple path sources configured: "
             + ", ".join(f"{name}={value}" for name, value in sources)
-            + "."
+            + ". fallback to uav_fleet_mode.custom_paths_json and ignore runtime.api_demo_json_path."
         )
-        if cfg.uav_fleet_mode.path_source_conflict_action == "raise":
-            raise ValueError(msg)
         print(msg)
-        return None
+        sources = [("uav_fleet_mode.custom_paths_json", cfg_path)]
 
     if not sources:
         if not cfg.uav_fleet_mode.require_external_paths:

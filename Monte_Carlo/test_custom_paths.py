@@ -173,7 +173,8 @@ def test_main_path_source_policy():
     cfg_conflict.runtime.api_demo_json_path = "config_templates/uav_paths.json"
     resolved = _resolve_external_path_source(cfg_conflict, script_dir)
     print(f"  conflict policy resolved path: {resolved}")
-    assert resolved is None
+    expected = os.path.abspath(os.path.join(script_dir, "config_templates/uav_paths.json"))
+    assert resolved == expected
 
     cfg_missing = _build_cfg()
     cfg_missing.uav_fleet_mode.custom_paths_json = None
