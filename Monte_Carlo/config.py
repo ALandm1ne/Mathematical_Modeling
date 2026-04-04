@@ -26,7 +26,7 @@ class MotionConfig:
     target_speed_km_h: float = 30.0    # 目标机动速度，单位 km/h
     uav_speed_km_h: float = 150.0      # 无人机巡航速度，单位 km/h
     uav_scan_radius_km: float = 20     # 无人机传感器扫描半径，单位 km
-    uav_detection_probability: float = 0.04  # UAV 扫描命中后的剔除概率，范围 [0, 1]
+    uav_detection_probability: float = 1  # UAV 扫描命中后的剔除概率，范围 [0, 1]
 
 
 @dataclass
@@ -43,13 +43,13 @@ class UAVFleetModeConfig:
 @dataclass
 class RuntimeSwitchesConfig:
     """运行开关与演示模式配置。"""
-    realtime_visualization: bool = False                # 是否开启实时交互窗口
+    realtime_visualization: bool = True                # 是否开启实时交互窗口
     export_simulation_video: bool = True               # 是否导出仿真视频（mp4/gif）
     export_uav_trajectory: bool = False                 # 是否导出 UAV 轨迹文件
 
     # API 演示模式：仅作为“额外路径来源”，不改变路径模式语义。
     api_demo_enable: bool = True                      # 是否启用演示路径来源
-    api_demo_json_path: str = "config_templates/uav_paths_n4.json"  # 演示路径 JSON（相对 script_dir）
+    api_demo_json_path: str = "config_templates/uav_paths_n2.json"  # 演示路径 JSON（相对 script_dir）
 
 
 @dataclass
@@ -108,6 +108,18 @@ class DebugFlagsConfig:
 
 
 @dataclass
+class DynamicReplanningConfig:
+    """动态路径重规划配置：边界触发 + 概率驱动条带选择"""
+    enable: bool = True                           # 是否启用动态重规划
+    trigger_tolerance_u: int = 3000              # 边界触发容差（单位u，默认3km）
+    min_steps_between_replans: int = 10          # 同一UAV最少重规划间隔（步数）
+    strip_evaluation_method: str = "particle_count"  # 条带评分方法：particle_count/probability
+    use_max_score_heuristic: bool = True         # 是否采用"最大评分优先"启发式
+    path_generation_timeout_s: float = 5.0       # 90度接入路径生成超时（秒）
+    fallback_to_second_best: bool = True         # 若最优条带几何不可达，是否降级到次优
+
+
+@dataclass
 class DevicePolicyConfig:
     require_cuda: bool = True  # 是否强制要求 CUDA 可用
 
@@ -148,6 +160,7 @@ class AppConfig:
     paths: PathConfig                                # 路径策略
     numeric: NumericCoreConfig                       # 数值核心参数（定点缩放等）
     debug: DebugFlagsConfig                          # 调试/性能开关
+    dynamic_replanning: DynamicReplanningConfig      # 动态重规划配置
     device_policy: DevicePolicyConfig                # 设备策略
     derived: DerivedConfig = field(default_factory=DerivedConfig)  # 派生参数缓存
     device_runtime: DeviceRuntime | None = None      # 运行时设备信息
@@ -239,6 +252,7 @@ def build_default_config(script_dir: str, require_cuda_override: bool | None = N
         paths=PathConfig(script_dir=script_dir),
         numeric=NumericCoreConfig(),
         debug=DebugFlagsConfig(),
+        dynamic_replanning=DynamicReplanningConfig(),
         device_policy=DevicePolicyConfig(),
     )
     if require_cuda_override is not None:

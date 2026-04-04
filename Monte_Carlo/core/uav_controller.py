@@ -8,7 +8,7 @@ Agent-Oriented API Notes:
 
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Optional, TypedDict
 
 import numpy as np
@@ -21,10 +21,12 @@ __all__ = [
     "UAVController",
     "UAVFleetController",
     "UAVFleetBuilder",
+    "ReplanningMetadata",
 ]
 
 _POINT_TOL_U = 1e-6
 _ANGLE_TOL_RAD = 1e-12
+_SEGMENT_CONTINUITY_TOL_U = 100.0
 
 _COMMON_ANGLE_DEG_TO_RAD = {
     0: 0.0,
@@ -79,6 +81,28 @@ class ArcSegmentSpec(TypedDict):
 
 
 SegmentSpec = LineSegmentSpec | ArcSegmentSpec
+
+
+@dataclass
+class ReplanningTriggerEvent:
+    """动态重规划触发事件记录"""
+    step_idx: int                           # 触发时的仿真步数
+    time_h: float                           # 触发时的仿真时间（小时）
+    trigger_pos_u: tuple[int, int]         # 触发位置
+    trigger_boundary: str                   # 触发的边界："top" 或 "bottom"
+    candidate_strips: list[tuple[int, int, int]] = field(default_factory=list)  # [(strip_id, score, rank), ...]
+    selected_strip_id: int = -1            # 最终选中的条带ID
+    new_segments_count: int = 0            # 插入的新段数量
+
+
+@dataclass
+class ReplanningMetadata:
+    """单个UAV的重规划元数据与触发历史"""
+    uav_id: int
+    assigned_x_range_u: tuple[int, int]    # 该UAV负责的x区间 (x_min, x_max)
+    last_replan_step: int = -1             # 上次重规划的步数
+    boundary_latch: Optional[str] = None   # 边界锁存：top/bottom，离开边界区后清除
+    replan_events: list[ReplanningTriggerEvent] = field(default_factory=list)
 
 
 @dataclass
@@ -311,8 +335,15 @@ class UAVPathGenerator:
                     )
                     dx = end[0] - current_point[0]
                     dy = end[1] - current_point[1]
+                    if abs(dx) > _POINT_TOL_U and abs(dy) > _POINT_TOL_U:
+                        raise ValueError(
+                            f"path_specs[{i}].segments[{j}] line must be axis-aligned"
+                        )
                     if math.hypot(dx, dy) > _POINT_TOL_U:
-                        current_heading = math.atan2(dy, dx)
+                        if abs(dx) > _POINT_TOL_U:
+                            current_heading = 0.0 if dx > 0 else math.pi
+                        else:
+                            current_heading = 0.5 * math.pi if dy > 0 else 1.5 * math.pi
                     current_point = end
                     continue
 
@@ -331,6 +362,11 @@ class UAVPathGenerator:
                     raise ValueError(
                         f"path_specs[{i}].segments[{j}].arc.rotation_angle_deg must be >= 0"
                     )
+                rot_mod_90 = float(arc.rotation_angle_deg) % 90.0
+                if not math.isclose(rot_mod_90, 0.0, abs_tol=1e-9):
+                    raise ValueError(
+                        f"path_specs[{i}].segments[{j}].arc.rotation_angle_deg must be a multiple of 90"
+                    )
                 if len(arc.start_point_u) != 2:
                     raise ValueError(
                         f"path_specs[{i}].segments[{j}].arc.start_point_u must contain 2 values"
@@ -340,7 +376,7 @@ class UAVPathGenerator:
                     f"path_specs[{i}].segments[{j}].arc.start_point_u",
                     arc.start_point_u,
                 )
-                if UAVPathGenerator._distance_u(start, current_point) > 1e-3:
+                if UAVPathGenerator._distance_u(start, current_point) > _SEGMENT_CONTINUITY_TOL_U:
                     if j == 0:
                         raise ValueError(
                             f"path_specs[{i}].segments[{j}] arc.start_point_u must equal start_pos_u"
@@ -398,6 +434,12 @@ class UAVController:
         self._arc_progress_angle: float = 0.0
         self._arc_start_heading: float = 0.0
         self._arc_radius_u: float = 0.0
+        
+        # 动态重规划元数据
+        self.replanning_metadata: ReplanningMetadata = ReplanningMetadata(
+            uav_id=uav_id,
+            assigned_x_range_u=(0, self.cfg.derived.area_width_u),
+        )
 
     @property
     def position_u(self) -> tuple[int, int]:
@@ -419,6 +461,122 @@ class UAVController:
         dy = float(target_pos_u[1]) - float(self.pos_u[1])
         return math.atan2(dy, dx)
 
+    def _check_boundary_trigger(
+        self, current_step: int
+    ) -> tuple[bool, Optional[str]]:
+        """
+        检查是否触及上/下边界，是否应该触发重规划。
+        返回：(should_trigger, boundary_type)，boundary_type 为 "top"/"bottom"/None
+        """
+        if not self.cfg.dynamic_replanning.enable:
+            return False, None
+
+        # 仅在直线飞行阶段允许触发；转弯或弧段执行时禁止触发，避免重复注入重规划段。
+        if self.is_turning:
+            return False, None
+        if self.current_segment_idx < len(self.segments):
+            seg = self.segments[self.current_segment_idx]
+            if isinstance(seg, dict) and seg.get("segment_type") == "arc":
+                return False, None
+        
+        # 节流检查：避免同一UAV高频重规划
+        steps_since_last = current_step - self.replanning_metadata.last_replan_step
+        if steps_since_last < self.cfg.dynamic_replanning.min_steps_between_replans:
+            return False, None
+        
+        d = self.cfg.derived
+        scan_radius = d.uav_scan_radius_u
+        tolerance = max(500, min(self.cfg.dynamic_replanning.trigger_tolerance_u, d.uav_step_u))
+        
+        y_pos = int(self.pos_u[1])
+        heading_sin = math.sin(float(self.angle))
+        heading_gate = 0.1  # 仅当有明确朝向边界趋势时触发
+        top_trigger_y = d.area_height_u - scan_radius
+        bottom_trigger_y = scan_radius
+        in_bottom_zone = abs(y_pos - bottom_trigger_y) <= tolerance
+        in_top_zone = abs(y_pos - top_trigger_y) <= tolerance
+
+        # 边界锁存复位：只有离开上下边界触发区后才允许再次触发。
+        if not in_top_zone and not in_bottom_zone:
+            self.replanning_metadata.boundary_latch = None
+        
+        # 检查下边界 (y ≈ 0)
+        if in_bottom_zone and heading_sin < -heading_gate:
+            if self.replanning_metadata.boundary_latch == "bottom":
+                return False, None
+            self.replanning_metadata.boundary_latch = "bottom"
+            return True, "bottom"
+        
+        # 检查上边界 (y ≈ area_height_u)
+        if in_top_zone and heading_sin > heading_gate:
+            if self.replanning_metadata.boundary_latch == "top":
+                return False, None
+            self.replanning_metadata.boundary_latch = "top"
+            return True, "top"
+        
+        return False, None
+
+    def record_replanning_trigger(
+        self,
+        step_idx: int,
+        time_h: float,
+        boundary_type: str,
+        candidate_strips: list[tuple[int, int, int]],
+        selected_strip_id: int,
+        new_segments_count: int = 0,
+    ) -> None:
+        """记录一次重规划触发事件"""
+        event = ReplanningTriggerEvent(
+            step_idx=step_idx,
+            time_h=time_h,
+            trigger_pos_u=self.position_u,
+            trigger_boundary=boundary_type,
+            candidate_strips=candidate_strips,
+            selected_strip_id=selected_strip_id,
+            new_segments_count=new_segments_count,
+        )
+        self.replanning_metadata.replan_events.append(event)
+        self.replanning_metadata.last_replan_step = step_idx
+        print(
+            f"[REPLAN] UAV#{self.uav_id} triggered at step={step_idx}, "
+            f"boundary={boundary_type}, selected_strip={selected_strip_id}"
+        )
+
+    def inject_segments_after_current(
+        self, new_segments: list[SegmentSpec]
+    ) -> None:
+        """
+        将新段注入到当前段之后（不改变当前处理段）。
+        保持段索引和状态的一致性。
+        """
+        if not new_segments:
+            return
+        for idx, seg in enumerate(new_segments):
+            if not isinstance(seg, dict):
+                raise TypeError(f"Injected segment[{idx}] must be dict")
+
+            seg_type = seg.get("segment_type")
+            if seg_type == "line":
+                if "end_point_u" not in seg:
+                    raise KeyError(f"Injected line segment[{idx}] missing end_point_u")
+            elif seg_type == "arc":
+                if "arc" not in seg:
+                    raise KeyError(f"Injected arc segment[{idx}] missing arc")
+                arc = self._normalize_arc_turn_spec(seg["arc"])
+                if not math.isclose(float(arc.rotation_angle_deg) % 360.0, 90.0, abs_tol=1e-9):
+                    raise ValueError("Injected arc segment rotation_angle_deg must be 90")
+                seg["arc"] = arc
+            else:
+                raise ValueError(f"Injected segment[{idx}] has invalid segment_type")
+
+        # 在 current_segment_idx 之后替换后续段，避免新旧路径混合导致不连续。
+        insert_pos = self.current_segment_idx + 1
+        self.segments = self.segments[:insert_pos] + new_segments
+        print(
+            f"[INJECT] UAV#{self.uav_id} injected {len(new_segments)} segments "
+            f"after index {self.current_segment_idx} (tail replaced)"
+        )
+
     def _move_toward_point(self, target_pos_u: tuple[float, float], step_u: float) -> bool:
         """向目标点推进一步；返回是否已在本步到达。"""
 
@@ -438,6 +596,55 @@ class UAVController:
         self.pos_u[1] += int(round(step_u * math.sin(self.angle)))
         self.angle = UAVPathGenerator._normalize_angle_0_2pi(self.angle)
         return False
+
+    def _move_axis_aligned_toward_point(self, target_pos_u: tuple[float, float], step_u: float) -> bool:
+        """沿坐标轴推进线段，禁止斜向运动。"""
+
+        tx = float(target_pos_u[0])
+        ty = float(target_pos_u[1])
+        cx = float(self.pos_u[0])
+        cy = float(self.pos_u[1])
+        dx = tx - cx
+        dy = ty - cy
+        axis_tol = 1.0
+
+        if abs(dx) <= axis_tol and abs(dy) <= axis_tol:
+            self.pos_u[0] = int(round(tx))
+            self.pos_u[1] = int(round(ty))
+            return True
+
+        if abs(dx) <= axis_tol:
+            self.pos_u[0] = int(round(tx))
+            step = min(step_u, abs(dy))
+            if dy > 0:
+                self.pos_u[1] += int(round(step))
+                self.angle = 0.5 * math.pi
+            else:
+                self.pos_u[1] -= int(round(step))
+                self.angle = 1.5 * math.pi
+            if abs(float(self.pos_u[1]) - ty) <= axis_tol:
+                self.pos_u[1] = int(round(ty))
+                return True
+            return False
+
+        if abs(dy) <= axis_tol:
+            self.pos_u[1] = int(round(ty))
+            step = min(step_u, abs(dx))
+            if dx > 0:
+                self.pos_u[0] += int(round(step))
+                self.angle = 0.0
+            else:
+                self.pos_u[0] -= int(round(step))
+                self.angle = math.pi
+            if abs(float(self.pos_u[0]) - tx) <= axis_tol:
+                self.pos_u[0] = int(round(tx))
+                return True
+            return False
+
+        raise RuntimeError(
+            f"UAV#{self.uav_id} line segment is not axis-aligned: "
+            f"current={self.position_u}, target=({int(round(tx))}, {int(round(ty))})"
+        )
 
     def uav_turn_start(self, arc_spec: ArcTurnSpec, start_heading_rad: float) -> None:
         """启动圆弧段：由起点、半径、方向、旋转角驱动。"""
@@ -536,6 +743,30 @@ class UAVController:
 
         return True
 
+    @staticmethod
+    def _normalize_arc_turn_spec(arc_raw) -> ArcTurnSpec:
+        """Normalize arc payload to ArcTurnSpec for runtime compatibility."""
+
+        if isinstance(arc_raw, ArcTurnSpec):
+            return arc_raw
+        if not isinstance(arc_raw, dict):
+            raise TypeError(f"arc segment payload must be ArcTurnSpec or dict, got {type(arc_raw)!r}")
+
+        if "start_point_u" not in arc_raw:
+            raise KeyError("arc segment missing required key: start_point_u")
+        if "radius_u" not in arc_raw:
+            raise KeyError("arc segment missing required key: radius_u")
+        if "rotation_angle_deg" not in arc_raw:
+            raise KeyError("arc segment missing required key: rotation_angle_deg")
+
+        start_point = UAVPathGenerator._parse_point2("arc.start_point_u", arc_raw["start_point_u"])
+        return ArcTurnSpec(
+            start_point_u=start_point,
+            radius_u=float(arc_raw["radius_u"]),
+            is_clockwise=bool(arc_raw.get("is_clockwise", True)),
+            rotation_angle_deg=float(arc_raw["rotation_angle_deg"]),
+        )
+
     def update(self, elapsed_time_h: float) -> bool:
         if not self.is_started:
             if elapsed_time_h >= self.start_time_h:
@@ -564,17 +795,20 @@ class UAVController:
 
         if seg_type == "line":
             target = segment["end_point_u"]
-            reached = self._move_toward_point((float(target[0]), float(target[1])), step_u)
+            reached = self._move_axis_aligned_toward_point((float(target[0]), float(target[1])), step_u)
             if reached:
                 self.current_segment_idx += 1
             return True
 
-        arc = segment["arc"]
+        arc = self._normalize_arc_turn_spec(segment["arc"])
+        segment["arc"] = arc
         start = (float(arc.start_point_u[0]), float(arc.start_point_u[1]))
 
         if not self._is_waypoint_reached(start, tolerance_u=max(1000, int(step_u))):
-            self._move_toward_point(start, step_u)
-            return True
+            raise RuntimeError(
+                f"UAV#{self.uav_id} arc start is not continuous with current position: "
+                f"current={self.position_u}, arc_start=({int(round(start[0]))}, {int(round(start[1]))})"
+            )
 
         self.pos_u[0] = int(round(start[0]))
         self.pos_u[1] = int(round(start[1]))
@@ -600,6 +834,11 @@ class UAVFleetController:
         self.controllers: list[UAVController] = []
         self.active_flags: list[bool] = []
         self.last_step_positions_u: list[tuple[int, int]] = []
+        
+        # 动态重规划状态追踪
+        self.pending_replans: list[tuple[int, str]] = []  # [(uav_id, boundary_type), ...]
+        self.current_step_idx: int = 0
+        
         self._build_controllers()
 
     def _build_controllers(self) -> None:
@@ -612,6 +851,7 @@ class UAVFleetController:
 
         overlap_count = 0
         used_x: set[int] = set()
+        x_positions: dict[int, int] = {}  # uav_id -> x_pos 映射
 
         for spec in path_specs:
             uav = UAVController(
@@ -629,6 +869,7 @@ class UAVFleetController:
             if x in used_x:
                 overlap_count += 1
             used_x.add(x)
+            x_positions[spec.uav_id] = x
 
             self.controllers.append(uav)
             self.active_flags.append(True)
@@ -637,6 +878,97 @@ class UAVFleetController:
             print(
                 "[FLEET][WARN] start positions analyzed: "
                 f"overlapped={overlap_count}, unique_x={len(used_x)}/{len(self.controllers)}."
+            )
+        
+        # 计算每个UAV的负责x区间（基于排序的起始位置）
+        self._assign_responsible_x_ranges(x_positions)
+
+    def _assign_responsible_x_ranges(self, x_positions: dict[int, int]) -> None:
+        """按 Figure 3 等时分区公式计算负责区间（与 pictures/3.py 一致）。"""
+
+        n = len(self.controllers)
+        if n <= 0:
+            return
+
+        e = self.cfg.environment
+        m = self.cfg.motion
+        s = self.cfg.simulation
+        scale = self.cfg.numeric.scale
+
+        W = float(e.area_width_km)
+        L = float(e.area_height_km)
+        w = float(m.uav_scan_radius_km)
+        v = float(m.uav_speed_km_h)
+        kappa = 1.0
+        base_x = -314.0
+        base_y = -323.0
+
+        widths = np.full(n, W / n, dtype=float)
+        min_width = min(2.0 * w, 0.5 * W / n)
+        x_edges = np.linspace(0.0, W, n + 1)
+        d_in = np.zeros(n, dtype=float)
+
+        def _entry_offset(width_km: float) -> float:
+            return min(w, 0.5 * width_km)
+
+        def _enforce_width_constraints(widths_km: np.ndarray) -> np.ndarray:
+            if n * min_width >= W:
+                return np.full(n, W / n, dtype=float)
+
+            x = np.maximum(widths_km.astype(float), min_width)
+            excess = float(np.sum(x) - W)
+            if excess <= 1e-9:
+                return x * (W / float(np.sum(x)))
+
+            for _ in range(20):
+                free = x > (min_width + 1e-9)
+                if not np.any(free):
+                    return np.full(n, W / n, dtype=float)
+                reducible = x[free] - min_width
+                reducible_sum = float(np.sum(reducible))
+                if reducible_sum <= 1e-12:
+                    return np.full(n, W / n, dtype=float)
+                delta = excess * reducible / reducible_sum
+                x[free] -= np.minimum(reducible, delta)
+                x = np.maximum(x, min_width)
+                excess = float(np.sum(x) - W)
+                if abs(excess) <= 1e-6:
+                    break
+
+            return x * (W / float(np.sum(x)))
+
+        for _ in range(40):
+            for i in range(n):
+                seg_w = widths[i]
+                entry_x = x_edges[i] + _entry_offset(float(seg_w))
+                d_in[i] = math.hypot(entry_x - base_x, 0.0 - base_y)
+
+            t_star = (float(np.mean(d_in)) + (L * W * kappa) / (n * w)) / v
+            raw = (w / (L * kappa)) * (v * t_star - d_in)
+            raw = np.maximum(raw, 1e-6)
+            next_widths = _enforce_width_constraints(raw)
+
+            if float(np.max(np.abs(next_widths - widths))) <= 1e-5:
+                widths = next_widths
+                break
+
+            widths = next_widths
+            x_edges[0] = 0.0
+            x_edges[1:] = np.cumsum(widths)
+
+        x_edges[0] = 0.0
+        x_edges[1:] = np.cumsum(widths)
+        x_edges[-1] = W
+        x_edges = np.maximum.accumulate(x_edges)
+
+        sorted_controllers = sorted(self.controllers, key=lambda u: u.uav_id)
+        for i, uav in enumerate(sorted_controllers):
+            x_min_u = int(round(float(x_edges[i]) * scale))
+            x_max_u = int(round(float(x_edges[i + 1]) * scale))
+            uav.replanning_metadata.assigned_x_range_u = (x_min_u, x_max_u)
+            print(
+                f"[FLEET] UAV#{uav.uav_id} assigned x_range=[{x_min_u}, {x_max_u}] km="
+                f"[{x_min_u/scale:.3f}, {x_max_u/scale:.3f}]"
             )
 
     @property
@@ -654,6 +986,10 @@ class UAVFleetController:
     def update_all(self, elapsed_time_h: float) -> bool:
         any_active = False
         step_positions: list[tuple[int, int]] = []
+        
+        # 重置本步pending重规划列表
+        self.pending_replans.clear()
+        
         for i, uav in enumerate(self.controllers):
             if not self.active_flags[i]:
                 continue
@@ -664,8 +1000,14 @@ class UAVFleetController:
                 self.active_flags[i] = False
             else:
                 any_active = True
+            
+            # 检查边界触发条件（仅在UAV活跃且启用重规划时检查）
+            should_trigger, boundary_type = uav._check_boundary_trigger(self.current_step_idx)
+            if should_trigger and boundary_type:
+                self.pending_replans.append((uav.uav_id, boundary_type))
 
         self.last_step_positions_u = step_positions
+        self.current_step_idx += 1
         return any_active
 
 

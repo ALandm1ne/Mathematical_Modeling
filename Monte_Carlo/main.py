@@ -14,6 +14,7 @@ from collections import deque   # 维护内存监控滑动窗口。
 from config import build_default_config           # 构建并初始化全局配置。
 from core.simulation_gpu import ParticleSystem    # GPU 端粒子系统。
 from core.uav_controller import UAVFleetBuilder   # UAV 机群高层构造器。
+from core.replanning_engine import ReplanningEngine  # 动态重规划引擎。
 from utils.data_manager import DataLogger         # 轨迹与结果导出器。
 from visualizer import SimVisualizer              # 仿真过程可视化器。
 
@@ -113,6 +114,14 @@ def main() -> None:
 
     visualizer = SimVisualizer(cfg, data_logger.run_results_dir, initial_density)  # 构造可视化器。
 
+    # 初始化动态重规划引擎（如果启用）
+    replanning_engine = None
+    if cfg.dynamic_replanning.enable:
+        replanning_engine = ReplanningEngine(cfg)
+        print("[REPLANNING] Dynamic replanning engine initialized (enabled)")
+    else:
+        print("[REPLANNING] Dynamic replanning engine disabled")
+
     history_count: list[int] = []                                     # 记录每步剩余粒子数。
     time_elapsed_h = 0.0                                              # 仿真时间（小时）。
     sim_step_counter = 0                                              # 实际记录步数。
@@ -144,11 +153,17 @@ def main() -> None:
                 pos_u,
                 cfg.motion.uav_detection_probability,
             )
-
-        # D) Bookkeeping.
+        # C.5) Dynamic replanning: after scanning, process pending boundary-triggered replans.
+        if replanning_engine and fleet_controller.pending_replans:
+            replanning_engine.process_pending_replans(
+                pending_replans=fleet_controller.pending_replans,
+                fleet_controller=fleet_controller,
+                particle_system=particle_system,
+                current_step=sim_step_counter,
+                elapsed_time_h=time_elapsed_h,
+            )
+        # D) Bookkeeping（统一时标：本步状态按当前 t_n 记录）。
         history_count.append(remaining_particles)                     # 记录收敛曲线数据。
-        time_elapsed_h += cfg.simulation.dt_h                         # 推进仿真时钟。
-        sim_step_counter += 1                                         # 记录逻辑步数。
 
         data_logger.record_uav_step_trace_fleet(                      # 将当前步的 UAV 状态写入日志。
             step=sim_step_counter,
@@ -157,6 +172,9 @@ def main() -> None:
             active_flags=fleet_controller.active_flags,
             remaining_particles=remaining_particles,
         )
+
+        time_elapsed_h += cfg.simulation.dt_h                         # 推进仿真时钟。
+        sim_step_counter += 1                                         # 记录逻辑步数。
 
         if cfg.enable_visual_output and step % cfg.refresh.steps_to_update == 0:  # 按刷新间隔更新图像。
             visualizer.update(                                                     # 画出当前密度和 UAV 轨迹。
@@ -202,6 +220,12 @@ def main() -> None:
 
     # 收尾阶段统一导出，避免中途频繁 I/O 干扰计算性能。
     data_logger.export_uav_trace()                                       # 导出轨迹 CSV/Parquet。
+    
+    # 导出动态重规划数据（如果启用）
+    if cfg.dynamic_replanning.enable:
+        data_logger.export_replanning_events(fleet_controller)           # 导出重规划触发事件。
+        data_logger.export_search_strategy(fleet_controller)             # 导出搜索策略对比数据。
+    
     final_remaining = history_count[-1] if history_count else particle_system.active_count
     visualizer.save_final_scan_snapshot(                                 # 无论 realtime/video 开关如何都保存终态图。
         particle_system=particle_system,

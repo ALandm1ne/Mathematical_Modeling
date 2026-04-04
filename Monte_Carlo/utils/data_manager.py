@@ -155,3 +155,99 @@ class DataLogger:
         n_rows = len(self.uav_step_trace["step"])
         file_size = os.path.getsize(path)
         print(f"UAV trajectory exported: {path} ({n_rows} rows, {file_size} bytes)")
+
+    def export_replanning_events(self, fleet_controller) -> None:
+        """
+        导出所有UAV的重规划触发事件。
+        用于图11的数据来源。
+        """
+        if not self.cfg.dynamic_replanning.enable:
+            return
+        
+        # 收集所有重规划事件
+        all_events = []
+        for uav in fleet_controller.controllers:
+            for event in uav.replanning_metadata.replan_events:
+                event_dict = {
+                    "uav_id": uav.uav_id,
+                    "step_idx": event.step_idx,
+                    "time_h": event.time_h,
+                    "trigger_pos_x_km": event.trigger_pos_u[0] / self.cfg.numeric.scale,
+                    "trigger_pos_y_km": event.trigger_pos_u[1] / self.cfg.numeric.scale,
+                    "trigger_boundary": event.trigger_boundary,
+                    "selected_strip_id": event.selected_strip_id,
+                    "num_candidates": len(event.candidate_strips),
+                    "top_3_candidates": "|".join(
+                        f"{cand[0]}({cand[1]})" for cand in event.candidate_strips[:3]
+                    ),
+                    "new_segments_count": event.new_segments_count,
+                }
+                all_events.append(event_dict)
+        
+        if not all_events:
+            print("No replanning events recorded.")
+            return
+        
+        # 导出为 CSV
+        csv_path = os.path.join(self.run_results_dir, "replanning_events.csv")
+        fieldnames = [
+            "uav_id", "step_idx", "time_h",
+            "trigger_pos_x_km", "trigger_pos_y_km", "trigger_boundary",
+            "selected_strip_id", "num_candidates", "top_3_candidates",
+            "new_segments_count",
+        ]
+        
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for event_dict in all_events:
+                writer.writerow(event_dict)
+        
+        file_size = os.path.getsize(csv_path)
+        print(f"Replanning events exported: {csv_path} ({len(all_events)} events, {file_size} bytes)")
+
+    def export_search_strategy(self, fleet_controller) -> None:
+        """
+        导出搜索策略对比数据（图11所需的关键数据）：
+        静态顺序 vs 动态顺序。
+        """
+        if not self.cfg.dynamic_replanning.enable:
+            return
+        
+        # 为每个UAV列举其所有重规划后访问的条带顺序
+        search_data = []
+        
+        for uav in fleet_controller.controllers:
+            # 构造该UAV的访问顺序
+            # 简单版本：按重规划事件的时间顺序列出访问的条带
+            for i, event in enumerate(uav.replanning_metadata.replan_events):
+                search_data.append({
+                    "uav_id": uav.uav_id,
+                    "replan_sequence": i + 1,
+                    "step_idx": event.step_idx,
+                    "time_h": event.time_h,
+                    "selected_strip_id": event.selected_strip_id,
+                    "boundary_type": event.trigger_boundary,
+                    "is_high_priority": len(event.candidate_strips) > 0 and event.selected_strip_id == event.candidate_strips[0][0],  # noqa
+                })
+        
+        if not search_data:
+            print("No search strategy data to export.")
+            return
+        
+        # 导出为 CSV
+        csv_path = os.path.join(self.run_results_dir, "search_strategy_dynamic.csv")
+        fieldnames = [
+            "uav_id", "replan_sequence", "step_idx", "time_h",
+            "selected_strip_id", "boundary_type", "is_high_priority",
+        ]
+        
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for entry in search_data:
+                writer.writerow(entry)
+        
+        file_size = os.path.getsize(csv_path)
+        print(f"Search strategy exported: {csv_path} ({len(search_data)} records, {file_size} bytes)")
+

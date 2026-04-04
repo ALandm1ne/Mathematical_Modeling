@@ -25,6 +25,7 @@ class SimVisualizer:
         self.video_writer = None
         self.video_output_path = None
         self.effective_video_dpi = self.cfg.video.dpi
+        self.responsibility_lines = []
 
         # 根据运行模式切换后端：实时窗口用 QtAgg，无界面模式用 Agg。
         backend = "QtAgg" if self.cfg.runtime.realtime_visualization else "Agg"
@@ -120,6 +121,39 @@ class SimVisualizer:
         if required_count <= 8:
             self.window.legend()
 
+    def _update_responsibility_boundaries(self, fleet_controller) -> None:
+        """绘制/更新 UAV 责任区分割线（x 方向垂直线）。"""
+        if self.window is None:
+            return
+        if not getattr(fleet_controller, "controllers", None):
+            return
+
+        boundaries_u = set()
+        for uav in fleet_controller.controllers:
+            x_min_u, x_max_u = uav.replanning_metadata.assigned_x_range_u
+            boundaries_u.add(int(x_min_u))
+            boundaries_u.add(int(x_max_u))
+
+        boundaries_km = sorted(x / self.cfg.numeric.scale for x in boundaries_u)
+
+        while len(self.responsibility_lines) < len(boundaries_km):
+            line = self.window.axvline(
+                x=0.0,
+                color="#E74C3C",
+                linestyle="--",
+                linewidth=0.8,
+                alpha=0.55,
+                zorder=4,
+            )
+            self.responsibility_lines.append(line)
+
+        for i, line in enumerate(self.responsibility_lines):
+            if i < len(boundaries_km):
+                line.set_xdata([boundaries_km[i], boundaries_km[i]])
+                line.set_visible(True)
+            else:
+                line.set_visible(False)
+
     def update(self, particle_system, fleet_controller, data_logger, elapsed_h: float, remaining_particles: int) -> None:
         """刷新一帧：密度图、UAV 位置/轨迹、状态文本、视频帧。"""
         if not self.cfg.enable_visual_output:
@@ -132,6 +166,7 @@ class SimVisualizer:
         density_matrix = particle_system.get_counts_in_grids()
         self.im.set_data(density_matrix)
         self._ensure_uav_artists(len(fleet_controller.controllers))
+        self._update_responsibility_boundaries(fleet_controller)
 
         for i, uav in enumerate(fleet_controller.controllers):
             if i >= len(self.uav_dots):
@@ -214,6 +249,7 @@ class SimVisualizer:
                     data_logger.uav_traj_y_km_by_id.get(i, []),
                 )
             self._update_status_panel(fleet_controller, elapsed_h, remaining_particles)
+            self._update_responsibility_boundaries(fleet_controller)
             self.fig.savefig(out_file, dpi=180, bbox_inches="tight")
             print(f"Saved final scan snapshot to {out_file}")
             return
@@ -243,6 +279,14 @@ class SimVisualizer:
                 ax.plot(xs, ys, color="black", linewidth=0.8, alpha=0.95)
             x_km, y_km = uav.position_km()
             ax.plot([x_km], [y_km], marker="o", markersize=3, color=color, linestyle="None")
+
+        boundaries_u = set()
+        for uav in fleet_controller.controllers:
+            x_min_u, x_max_u = uav.replanning_metadata.assigned_x_range_u
+            boundaries_u.add(int(x_min_u))
+            boundaries_u.add(int(x_max_u))
+        for x_u in sorted(boundaries_u):
+            ax.axvline(x=x_u / self.cfg.numeric.scale, color="#E74C3C", linestyle="--", linewidth=0.8, alpha=0.55)
 
         active_count = sum(1 for flag in fleet_controller.active_flags if flag)
         status_text = (
