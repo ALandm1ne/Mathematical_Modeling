@@ -44,7 +44,7 @@ class UAVFleetModeConfig:
 class RuntimeSwitchesConfig:
     """运行开关与演示模式配置。"""
     realtime_visualization: bool = False                # 是否开启实时交互窗口
-    export_simulation_video: bool = True               # 是否导出仿真视频（mp4/gif）
+    export_simulation_video: bool = False               # 是否导出仿真视频（mp4/gif）
     export_uav_trajectory: bool = False                 # 是否导出 UAV 轨迹文件
 
     # API 演示模式：仅作为“额外路径来源”，不改变路径模式语义。

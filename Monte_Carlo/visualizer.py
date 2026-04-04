@@ -183,6 +183,89 @@ class SimVisualizer:
             "\n".join(status_lines)
         )
 
+    def save_final_scan_snapshot(
+        self,
+        particle_system,
+        fleet_controller,
+        data_logger,
+        elapsed_h: float,
+        remaining_particles: int,
+    ) -> None:
+        """
+        保存扫描完成后的终态图像。
+
+        该导出独立于 realtime/video 开关：即使未启用实时可视化和视频，也会输出终态图。
+        """
+        out_file = os.path.join(self.run_results_dir, "scan_completed.png")
+        density_matrix = particle_system.get_counts_in_grids()
+        d = self.cfg.derived
+
+        # 若主图已初始化，直接在主图上更新后保存，保证样式一致。
+        if self.fig is not None and self.window is not None and self.im is not None:
+            self.im.set_data(density_matrix)
+            self._ensure_uav_artists(len(fleet_controller.controllers))
+            for i, uav in enumerate(fleet_controller.controllers):
+                if i >= len(self.uav_dots):
+                    break
+                x_km, y_km = uav.position_km()
+                self.uav_dots[i].set_data([x_km], [y_km])
+                self.uav_paths[i].set_data(
+                    data_logger.uav_traj_x_km_by_id.get(i, []),
+                    data_logger.uav_traj_y_km_by_id.get(i, []),
+                )
+            self._update_status_panel(fleet_controller, elapsed_h, remaining_particles)
+            self.fig.savefig(out_file, dpi=180, bbox_inches="tight")
+            print(f"Saved final scan snapshot to {out_file}")
+            return
+
+        # 无主图时，构造一次性静态终态图，避免依赖 runtime 可视化开关。
+        fig, ax = self.plt.subplots(figsize=self.cfg.figure.main_fig_size)
+        fixed_vmax = max(1.0, float(np.max(density_matrix)))
+        im = ax.imshow(
+            density_matrix,
+            extent=(0, self.cfg.environment.area_width_km, 0, self.cfg.environment.area_height_km),
+            origin="lower",
+            cmap="cividis",
+            vmin=0,
+            vmax=fixed_vmax,
+        )
+        fig.colorbar(im, ax=ax, label="Particle Density (particles/grid)")
+        ax.set_title("CUDA Particle Density (Final Snapshot)")
+        ax.set_xlabel("X (km)")
+        ax.set_ylabel("Y (km)")
+
+        cmap = self.plt.cm.get_cmap("tab10", max(1, len(fleet_controller.controllers)))
+        for i, uav in enumerate(fleet_controller.controllers):
+            color = cmap(i)
+            xs = data_logger.uav_traj_x_km_by_id.get(i, [])
+            ys = data_logger.uav_traj_y_km_by_id.get(i, [])
+            if xs and ys:
+                ax.plot(xs, ys, color="black", linewidth=0.8, alpha=0.95)
+            x_km, y_km = uav.position_km()
+            ax.plot([x_km], [y_km], marker="o", markersize=3, color=color, linestyle="None")
+
+        active_count = sum(1 for flag in fleet_controller.active_flags if flag)
+        status_text = (
+            f"UAV active: {active_count}/{len(fleet_controller.controllers)}\n"
+            f"Time: {elapsed_h:.2f} h\n"
+            f"Particles: {remaining_particles}/{self.cfg.simulation.n_particles} "
+            f"({(remaining_particles / self.cfg.simulation.n_particles) * 100.0:.2f}%)"
+        )
+        fig.text(
+            self.cfg.figure.debug_text_x,
+            self.cfg.figure.debug_text_y,
+            status_text,
+            transform=fig.transFigure,
+            va="top",
+            ha="left",
+            fontsize=10,
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.75, edgecolor="gray"),
+        )
+
+        fig.savefig(out_file, dpi=180, bbox_inches="tight")
+        self.plt.close(fig)
+        print(f"Saved final scan snapshot to {out_file}")
+
     def save_summary_figure(self, history_count: list[int]) -> None:
         """保存收敛曲线图，并在末端标注终点坐标。"""
         self.plt.figure(figsize=self.cfg.figure.summary_fig_size)

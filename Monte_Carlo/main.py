@@ -202,6 +202,14 @@ def main() -> None:
 
     # 收尾阶段统一导出，避免中途频繁 I/O 干扰计算性能。
     data_logger.export_uav_trace()                                       # 导出轨迹 CSV/Parquet。
+    final_remaining = history_count[-1] if history_count else particle_system.active_count
+    visualizer.save_final_scan_snapshot(                                 # 无论 realtime/video 开关如何都保存终态图。
+        particle_system=particle_system,
+        fleet_controller=fleet_controller,
+        data_logger=data_logger,
+        elapsed_h=time_elapsed_h,
+        remaining_particles=final_remaining,
+    )
     visualizer.finalize()                                                # 关闭视频写入器/交互状态。
     visualizer.save_summary_figure(history_count)                        # 保存收敛曲线。
 
