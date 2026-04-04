@@ -1,0 +1,119 @@
+[
+  {
+    "_comment": "UAV#0 uses Figure 3 equal-time partition logic. x∈[0,80713] u.",
+    "uav_id": 0,
+    "start_time_h": 3.097562,
+    "start_pos_u": [20000, 0],
+    "segments": [
+      {
+        "segment_type": "line",
+        "end_point_u": [20000, 444000]
+      },
+      {
+        "segment_type": "arc",
+        "arc": {
+          "start_point_u": [20000, 444000],
+          "radius_u": 20000,
+          "is_clockwise": true,
+          "rotation_angle_deg": 180
+        }
+      },
+      {
+        "segment_type": "line",
+        "end_point_u": [60000, 0]
+      },
+      {
+        "segment_type": "arc",
+        "arc": {
+          "start_point_u": [60000, 0],
+          "radius_u": 20000,
+          "is_clockwise": false,
+          "rotation_angle_deg": 180
+        }
+      },
+      {
+        "segment_type": "line",
+        "end_point_u": [100000, 444000]
+      }
+    ],
+    "auto_gen_type": "figure3_n4"
+  },
+  {
+    "_comment": "UAV#1 uses Figure 3 equal-time partition logic. x∈[80713,158677] u.",
+    "uav_id": 1,
+    "start_time_h": 3.504383,
+    "start_pos_u": [100713, 0],
+    "segments": [
+      {
+        "segment_type": "line",
+        "end_point_u": [100713, 444000]
+      },
+      {
+        "segment_type": "arc",
+        "arc": {
+          "start_point_u": [100713, 444000],
+          "radius_u": 20000,
+          "is_clockwise": true,
+          "rotation_angle_deg": 180
+        }
+      },
+      {
+        "segment_type": "line",
+        "end_point_u": [140713, 0]
+      }
+    ],
+    "auto_gen_type": "figure3_n4"
+  },
+  {
+    "_comment": "UAV#2 uses Figure 3 equal-time partition logic. x∈[158677,233782] u.",
+    "uav_id": 2,
+    "start_time_h": 3.927450,
+    "start_pos_u": [178677, 0],
+    "segments": [
+      {
+        "segment_type": "line",
+        "end_point_u": [178677, 444000]
+      },
+      {
+        "segment_type": "arc",
+        "arc": {
+          "start_point_u": [178677, 444000],
+          "radius_u": 20000,
+          "is_clockwise": true,
+          "rotation_angle_deg": 180
+        }
+      },
+      {
+        "segment_type": "line",
+        "end_point_u": [218677, 0]
+      }
+    ],
+    "auto_gen_type": "figure3_n4"
+  },
+  {
+    "_comment": "UAV#3 uses Figure 3 equal-time partition logic. x∈[233782,306000] u.",
+    "uav_id": 3,
+    "start_time_h": 4.354848,
+    "start_pos_u": [253782, 0],
+    "segments": [
+      {
+        "segment_type": "line",
+        "end_point_u": [253782, 444000]
+      },
+      {
+        "segment_type": "arc",
+        "arc": {
+          "start_point_u": [253782, 444000],
+          "radius_u": 20000,
+          "is_clockwise": true,
+          "rotation_angle_deg": 180
+        }
+      },
+      {
+        "segment_type": "line",
+        "end_point_u": [293782, 0]
+      }
+    ],
+    "auto_gen_type": "figure3_n4"
+  }
+]

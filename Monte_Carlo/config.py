@@ -25,8 +25,8 @@ class EnvironmentConfig:
 class MotionConfig:
     target_speed_km_h: float = 30.0    # 目标机动速度，单位 km/h
     uav_speed_km_h: float = 150.0      # 无人机巡航速度，单位 km/h
-    uav_scan_radius_km: float = 10.0   # 无人机传感器扫描半径，单位 km
-    uav_detection_probability: float = 0.1  # UAV 扫描命中后的剔除概率，范围 [0, 1]
+    uav_scan_radius_km: float = 20     # 无人机传感器扫描半径，单位 km
+    uav_detection_probability: float = 0.04  # UAV 扫描命中后的剔除概率，范围 [0, 1]
 
 
 @dataclass
@@ -44,12 +44,12 @@ class UAVFleetModeConfig:
 class RuntimeSwitchesConfig:
     """运行开关与演示模式配置。"""
     realtime_visualization: bool = False                # 是否开启实时交互窗口
-    export_simulation_video: bool = False               # 是否导出仿真视频（mp4/gif）
+    export_simulation_video: bool = True               # 是否导出仿真视频（mp4/gif）
     export_uav_trajectory: bool = False                 # 是否导出 UAV 轨迹文件
 
     # API 演示模式：仅作为“额外路径来源”，不改变路径模式语义。
     api_demo_enable: bool = True                      # 是否启用演示路径来源
-    api_demo_json_path: str = "config_templates/uav_paths.json"  # 演示路径 JSON（相对 script_dir）
+    api_demo_json_path: str = "config_templates/uav_paths_n4.json"  # 演示路径 JSON（相对 script_dir）
 
 
 @dataclass
