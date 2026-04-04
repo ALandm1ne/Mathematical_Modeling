@@ -57,7 +57,7 @@ class SimVisualizer:
             np.zeros((d.n_y_bins, d.n_x_bins), dtype=np.float32),
             extent=(0, self.cfg.environment.area_width_km, 0, self.cfg.environment.area_height_km),
             origin="lower",
-            cmap="coolwarm",
+            cmap="cividis",
             animated=True,
             vmin=0,
             vmax=fixed_vmax,
