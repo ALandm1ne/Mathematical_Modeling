@@ -11,6 +11,7 @@ import os                       # 拼接路径、检查文件存在性。
 import sys                      # 获取当前 Python 解释器路径。
 import subprocess               # 调用图 11 生成脚本。
 import time                     # 统计仿真 wall time。
+import math                     # 完成阈值计算（向上取整）。
 from collections import deque   # 维护内存监控滑动窗口。
 
 from config import build_default_config           # 构建并初始化全局配置。
@@ -129,6 +130,14 @@ def main() -> None:
     history_count: list[int] = []                                     # 记录每步剩余粒子数。
     time_elapsed_h = 0.0                                              # 仿真时间（小时）。
     sim_step_counter = 0                                              # 实际记录步数。
+    completion_threshold_particles = max(
+        1,
+        int(math.ceil(cfg.simulation.n_particles * 0.001)),
+    )
+    print(
+        "[STOP] completion threshold set to "
+        f"0.1% of initial particles: {completion_threshold_particles}"
+    )
     # 用滑动窗口检测“持续增长型”内存风险。
     mem_window = deque(maxlen=cfg.memory.leak_warning_window)         # RSS 滑动窗口。
 
@@ -136,8 +145,8 @@ def main() -> None:
     sim_start_time = time.perf_counter()                              # 记录 wall time 起点。
 
     for step in range(cfg.simulation.max_steps):                      # 主仿真循环，步数上限受配置控制。
-        # 无活跃粒子表示搜索空间已被完全排除，可提前结束。
-        if particle_system.active_count <= 0:                         # 粒子已经全部被排除。
+        # 剩余粒子低于阈值（初始粒子数的 0.1%）即视为搜索完成。
+        if particle_system.active_count <= completion_threshold_particles:
             break
         # 无活跃 UAV 时无需继续推进粒子。
         if not fleet_controller.active_positions_u:                   # 没有可用 UAV 就停止。
@@ -203,7 +212,7 @@ def main() -> None:
                         f"+{growth:.2f} GB (possible leak or oversized frame buffers)."
                     )
 
-        if remaining_particles <= 0:                                          # 粒子耗尽则结束。
+        if remaining_particles <= completion_threshold_particles:              # 达到完成阈值则结束。
             break
         if not any_uav_active:                                                # UAV 全部结束则结束。
             break

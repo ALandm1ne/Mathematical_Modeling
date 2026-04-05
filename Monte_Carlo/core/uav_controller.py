@@ -446,6 +446,18 @@ class UAVController:
             assigned_x_range_u=(0, self.cfg.derived.area_width_u),
         )
 
+        # 基线策略（Static / Strip+Markov）连续相邻条带扫描模式。
+        self.continuous_strip_scan_enabled: bool = False
+        self._scan_y_up: bool = True
+        self._scan_x_right: bool = True
+        self._scan_x_min_u: int = int(self.cfg.derived.uav_scan_radius_u)
+        self._scan_x_max_u: int = int(self.cfg.derived.area_width_u - self.cfg.derived.uav_scan_radius_u)
+        self._scan_y_min_u: int = int(self.cfg.derived.uav_scan_radius_u)
+        self._scan_y_max_u: int = int(self.cfg.derived.area_height_u - self.cfg.derived.uav_scan_radius_u)
+        self._scan_strip_pitch_u: int = int(2 * self.cfg.derived.uav_scan_radius_u)
+        self._scan_target_u: Optional[tuple[int, int]] = None
+        self._scan_phase_vertical: bool = True
+
     @property
     def position_u(self) -> tuple[int, int]:
         return int(self.pos_u[0]), int(self.pos_u[1])
@@ -790,11 +802,89 @@ class UAVController:
                 return True
 
         if not self.segments:
+            if self.continuous_strip_scan_enabled:
+                return self._update_continuous_strip_scan()
             raise RuntimeError(
                 "UAVController requires non-empty segments. "
                 "Strip-scan mode has been removed; provide external path specs."
             )
         return self._update_custom_path()
+
+    def enable_continuous_adjacent_strip_scan(self) -> None:
+        """启用连续相邻条带扫描：中心线始终限制在 [0, W] 和 [0, H]，不预留扫描半径缓冲。"""
+
+        d = self.cfg.derived
+        self.continuous_strip_scan_enabled = True
+        self.segments = []
+        self.current_segment_idx = 0
+        self.auto_gen_type = "continuous_adjacent_strip"
+
+        self._scan_x_min_u = 0
+        self._scan_x_max_u = int(d.area_width_u)
+        self._scan_y_min_u = 0
+        self._scan_y_max_u = int(d.area_height_u)
+        self._scan_strip_pitch_u = int(max(1, 2 * d.uav_scan_radius_u))
+
+        # 起点中心线钳制到合法范围。
+        self.pos_u[0] = int(min(max(int(self.pos_u[0]), self._scan_x_min_u), self._scan_x_max_u))
+        self.pos_u[1] = int(min(max(int(self.pos_u[1]), self._scan_y_min_u), self._scan_y_max_u))
+
+        self._scan_y_up = True
+        self._scan_x_right = True
+        self._scan_target_u = None
+        self._scan_phase_vertical = True
+
+    def _compute_next_strip_center_x(self) -> int:
+        """计算下一个相邻条带中心线 x，并在左右边界做反向。"""
+
+        current_x = int(self.pos_u[0])
+        next_x = current_x + (self._scan_strip_pitch_u if self._scan_x_right else -self._scan_strip_pitch_u)
+
+        if next_x > self._scan_x_max_u:
+            self._scan_x_right = False
+            next_x = current_x - self._scan_strip_pitch_u
+        elif next_x < self._scan_x_min_u:
+            self._scan_x_right = True
+            next_x = current_x + self._scan_strip_pitch_u
+
+        return int(min(max(next_x, self._scan_x_min_u), self._scan_x_max_u))
+
+    def _plan_next_scan_target(self) -> tuple[int, int]:
+        """规划下一段目标：vertical -> horizontal -> vertical ..."""
+
+        current_x = int(self.pos_u[0])
+        current_y = int(self.pos_u[1])
+
+        if self._scan_phase_vertical:
+            target_y = self._scan_y_max_u if self._scan_y_up else self._scan_y_min_u
+            return int(current_x), int(target_y)
+
+        # horizontal transfer at top/bottom boundary
+        next_x = self._compute_next_strip_center_x()
+        return int(next_x), int(current_y)
+
+    def _update_continuous_strip_scan(self) -> bool:
+        """连续相邻条带蛇形扫描更新。"""
+
+        if self._scan_target_u is None:
+            self._scan_target_u = self._plan_next_scan_target()
+
+        step_u = float(self.cfg.derived.uav_step_u)
+        reached = self._move_axis_aligned_toward_point(
+            (float(self._scan_target_u[0]), float(self._scan_target_u[1])),
+            step_u,
+        )
+        if reached:
+            if self._scan_phase_vertical:
+                # completed one vertical strip, then move horizontally to adjacent strip.
+                self._scan_phase_vertical = False
+            else:
+                # completed horizontal transfer, reverse vertical direction and continue.
+                self._scan_phase_vertical = True
+                self._scan_y_up = not self._scan_y_up
+            self._scan_target_u = self._plan_next_scan_target()
+
+        return True
 
     def _update_custom_path(self) -> bool:
         if self.current_segment_idx >= len(self.segments):
@@ -888,6 +978,11 @@ class UAVFleetController:
 
             self.controllers.append(uav)
             self.active_flags.append(True)
+
+        # 基线模式：关闭动态重规划时，路径改为相邻条带连续扫描直到 max_steps。
+        if not self.cfg.dynamic_replanning.enable:
+            for uav in self.controllers:
+                uav.enable_continuous_adjacent_strip_scan()
 
         if overlap_count > 0:
             print(

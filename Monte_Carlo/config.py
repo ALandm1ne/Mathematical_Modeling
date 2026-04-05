@@ -12,7 +12,7 @@ import torch
 class SimulationTuningConfig:
     n_particles: int = 10_000_000  # 初始粒子总数（潜在目标样本量）
     dt_h: float = 0.01             # 仿真时间步长，单位小时
-    max_steps: int = 4000          # 最大仿真步数上限
+    max_steps: int = 1000          # 最大仿真步数上限（10h / 0.01h = 1000步）
 
 
 @dataclass
@@ -23,7 +23,7 @@ class EnvironmentConfig:
 
 @dataclass
 class MotionConfig:
-    target_speed_km_h: float = 30.0    # 目标机动速度，单位 km/h
+    target_speed_km_h: float = 30.0
     uav_speed_km_h: float = 150.0      # 无人机巡航速度，单位 km/h
     uav_scan_radius_km: float = 20     # 无人机传感器扫描半径，单位 km
     uav_detection_probability: float = 1  # UAV 扫描命中后的剔除概率，范围 [0, 1]
@@ -43,7 +43,7 @@ class UAVFleetModeConfig:
 @dataclass
 class RuntimeSwitchesConfig:
     """运行开关与演示模式配置。"""
-    realtime_visualization: bool = False                # 是否开启实时交互窗口
+    realtime_visualization: bool = False               # 是否开启实时交互窗口
     export_simulation_video: bool = False               # 是否导出仿真视频（mp4/gif）
     export_uav_trajectory: bool = True                 # 是否导出 UAV 轨迹文件
 
@@ -110,7 +110,7 @@ class DebugFlagsConfig:
 @dataclass
 class DynamicReplanningConfig:
     """动态路径重规划配置：边界触发 + 概率驱动条带选择"""
-    enable: bool = True                           # 是否启用动态重规划
+    enable: bool = False
     trigger_tolerance_u: int = 3000              # 边界触发容差（单位u，默认3km）
     min_steps_between_replans: int = 10          # 同一UAV最少重规划间隔（步数）
     strip_evaluation_method: str = "particle_count"  # 条带评分方法：particle_count/probability
