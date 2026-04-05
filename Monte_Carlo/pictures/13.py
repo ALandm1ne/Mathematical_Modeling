@@ -354,6 +354,8 @@ def plot_figure_13(results: dict[int, list[float]], params: Figure13Params) -> P
     # 准备数据
     uav_counts = sorted(results.keys())
     success_rates = [results[n][0] * 100.0 for n in uav_counts]
+    std_rates = [results[n][1] * 100.0 for n in uav_counts]
+    u_a_rates = [results[n][2] * 100.0 for n in uav_counts]
     
     # 创建图形
     fig, ax = plt.subplots(figsize=params.figsize, dpi=params.dpi)
@@ -361,13 +363,35 @@ def plot_figure_13(results: dict[int, list[float]], params: Figure13Params) -> P
     # 绘制曲线
     ax.plot(uav_counts, success_rates, "o-", linewidth=2.5, markersize=8, 
             label="Success Rate", color="#1f77b4")
+
+    # 标注每个点的成功率 / std / uA（成功率放在最上行）
+    for i, n_uavs in enumerate(uav_counts):
+        rate = success_rates[i]
+        std_v = std_rates[i]
+        u_a_v = u_a_rates[i]
+        y_offset = -6.0 if rate >= 92.0 else 4.0
+        va = "top" if y_offset < 0 else "bottom"
+        ax.text(
+            n_uavs,
+            rate + y_offset,
+            f"rate={rate:.3f}%\nstd={std_v:.3f}%\nuA={u_a_v:.3f}%",
+            ha="center",
+            va=va,
+            fontsize=8,
+            color="#333333",
+        )
     
-    # 添加阈值线（0.90 和 0.95）
+    # 添加阈值线（0.90、0.95、0.99）
     ax.axhline(y=90, color="red", linestyle="--", linewidth=1.5, alpha=0.7, label="90% threshold")
     ax.axhline(y=95, color="green", linestyle="--", linewidth=1.5, alpha=0.7, label="95% threshold")
+    ax.axhline(y=99, color="#9467bd", linestyle="--", linewidth=1.5, alpha=0.8, label="99% threshold")
     
-    # 标记达到 90% 和 95% 的点
-    for threshold, color, label_suffix in [(0.90, "red", "90%"), (0.95, "green", "95%")]:
+    # 标记达到 90%、95%、99% 的首个点
+    for threshold, color, label_suffix in [
+        (0.90, "red", "90%"),
+        (0.95, "green", "95%"),
+        (0.99, "#9467bd", "99%"),
+    ]:
         for i, rate in enumerate(success_rates):
             if rate >= threshold * 100:
                 ax.scatter([uav_counts[i]], [rate], s=150, color=color, marker="*", 
