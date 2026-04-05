@@ -1,0 +1,2 @@
+strategy,partition_id,partition_mode,x_split_km,valid_runs,reach_rate_90,t90_avg_h,t90_std_h,t90_uA_h,reach_rate_95,t95_avg_h,t95_std_h,t95_uA_h,reach_rate_99,t99_avg_h,t99_std_h,t99_uA_h
+strip_markov_dynamic,equal_width_153,equal_width,153.0,1,1.000000,16.080000,0.000000,0.000000,1.000000,19.110000,0.000000,0.000000,1.000000,22.840000,0.000000,0.000000

@@ -1,0 +1,10 @@
+run_dir,strategy
+20260405_055837,strip_markov_dynamic
+20260405_055849,strip_markov_dynamic
+20260405_055902,strip_markov_dynamic
+20260405_055914,strip_markov
+20260405_055935,strip_markov
+20260405_055940,strip_markov
+20260405_055958,static_strip
+20260405_060021,static_strip
+20260405_060045,static_strip

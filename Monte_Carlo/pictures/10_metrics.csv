@@ -1,0 +1,2 @@
+focus_uav,focus_strip_center_km,delta_t_h_after_scan,search_left_km,search_right_km,prior_strip_mass,predicted_strip_mass,posterior_strip_mass,posterior_later_strip_mass,prior_entropy,predicted_entropy,posterior_entropy,posterior_later_entropy
+2,100.712831,0.466667,80.712831,120.712831,0.33968277,0.32583693,0.00000000,0.09850206,9.78209579,9.81688337,9.76894498,10.02132147

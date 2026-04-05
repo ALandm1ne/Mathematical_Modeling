@@ -1,0 +1,2 @@
+figure_id,x_variable,x_value,x_unit,runs_per_setting,valid_runs,reach_rate_90,reach_rate_95,reach_rate_99,t90_mean_h,t90_uA_h,t95_mean_h,t95_uA_h,t99_mean_h,t99_uA_h,n_t90_raw,n_t95_raw,n_t99_raw,t90_uA_raw_h,t95_uA_raw_h,t99_uA_raw_h
+18,Target Speed,10.0,km/h,1,0,0.000,0.000,0.000,,,,,,,0,0,0,,,

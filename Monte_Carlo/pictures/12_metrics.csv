@@ -1,0 +1,4 @@
+strategy_key,strategy_label,n_runs,avg_discovery_time_h,success_rate_within_limit,success_count,time_limit_h
+static_strip,Static Strip,1,9.070000,0.000000,0,10.000000
+strip_markov,Strip + Markov,4,24.260000,0.000000,0,10.000000
+strip_markov_dynamic,Strip + Markov + Dynamic Replanning,4,39.990000,0.000000,0,10.000000

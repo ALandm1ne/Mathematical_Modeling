@@ -1,7 +1,6 @@
 build
 .cache
 *.txt
-*.csv
 uv.lock
 /Monte_Carlo/results/*
 *.parquet

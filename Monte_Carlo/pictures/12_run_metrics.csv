@@ -1,0 +1,10 @@
+run_dir,strategy_key,strategy_label,found,discovery_time_h,success_within_limit,run_end_time_h
+20260405_051010,strip_markov_dynamic,Strip + Markov + Dynamic Replanning,False,39.990000,False,39.990000
+20260405_051752,strip_markov_dynamic,Strip + Markov + Dynamic Replanning,False,39.990000,False,39.990000
+20260405_051839,strip_markov_dynamic,Strip + Markov + Dynamic Replanning,False,39.990000,False,39.990000
+20260405_053738,strip_markov,Strip + Markov,False,9.070000,False,9.070000
+20260405_053749,static_strip,Static Strip,False,9.070000,False,9.070000
+20260405_054420,strip_markov,Strip + Markov,False,39.990000,False,39.990000
+20260405_054522,strip_markov,Strip + Markov,False,7.990000,False,7.990000
+20260405_054533,strip_markov,Strip + Markov,False,39.990000,False,39.990000
+20260405_054926,strip_markov_dynamic,Strip + Markov + Dynamic Replanning,False,39.990000,False,39.990000
