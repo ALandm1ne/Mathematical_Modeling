@@ -10,3 +10,5 @@ uv.lock
 /Monte_Carlo/__pycache__/*
 /Monte_Carlo/core/__pycache__/*
 /Monte_Carlo/utils/__pycache__/*
+*.log
+MEMORY.md
