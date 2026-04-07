@@ -804,6 +804,9 @@ class UAVController:
         if not self.segments:
             if self.continuous_strip_scan_enabled:
                 return self._update_continuous_strip_scan()
+            if self.cfg.dynamic_replanning.enable:
+                # Dynamic bootstrap mode allows empty segments before first replanning injection.
+                return True
             raise RuntimeError(
                 "UAVController requires non-empty segments. "
                 "Strip-scan mode has been removed; provide external path specs."
@@ -1153,6 +1156,8 @@ class UAVFleetBuilder:
         fleet.controllers = []
         fleet.active_flags = []
         fleet.last_step_positions_u = []
+        fleet.pending_replans = []
+        fleet.current_step_idx = 0
 
         for spec in path_specs:
             uav = UAVController(
@@ -1170,4 +1175,58 @@ class UAVFleetBuilder:
             fleet.active_flags.append(True)
             fleet.last_step_positions_u.append(uav.position_u)
 
+        return fleet
+
+    @staticmethod
+    def from_dynamic_bootstrap(cfg) -> UAVFleetController:
+        """Build fleet without external path JSON for dynamic replanning cold-start."""
+
+        n_uavs = int(cfg.uav_fleet_mode.dynamic_bootstrap_uav_count)
+        if n_uavs <= 0:
+            raise ValueError("dynamic_bootstrap_uav_count must be > 0")
+
+        d = cfg.derived
+        scale = cfg.numeric.scale
+        base_x_km, base_y_km = cfg.uav_fleet_mode.dynamic_bootstrap_base_pos_km
+        start_y_u = int(round(float(cfg.uav_fleet_mode.dynamic_bootstrap_start_y_km) * scale))
+        start_y_u = int(min(max(start_y_u, 0), d.area_height_u))
+        region_width_u = d.area_width_u / float(n_uavs)
+        scan_radius_u = int(d.uav_scan_radius_u)
+
+        fleet = UAVFleetController.__new__(UAVFleetController)
+        fleet.cfg = cfg
+        fleet.controllers = []
+        fleet.active_flags = []
+        fleet.last_step_positions_u = []
+        fleet.pending_replans = []
+        fleet.current_step_idx = 0
+
+        x_positions: dict[int, int] = {}
+        for idx in range(n_uavs):
+            x_min_u = int(round(idx * region_width_u))
+            x_max_u = int(round((idx + 1) * region_width_u))
+            x_start_u = x_min_u + scan_radius_u
+            x_start_u = int(min(max(x_start_u, x_min_u), x_max_u))
+
+            x_start_km = x_start_u / float(scale)
+            y_start_km = start_y_u / float(scale)
+            distance_km = math.hypot(x_start_km - float(base_x_km), y_start_km - float(base_y_km))
+            start_time_h = distance_km / float(cfg.motion.uav_speed_km_h)
+
+            uav = UAVController(
+                cfg,
+                uav_id=idx,
+                start_pos_u=(x_start_u, start_y_u),
+                start_time_h=start_time_h,
+            )
+            uav.segments = []
+            uav.current_segment_idx = 0
+            uav.state = "flying_to_waypoint"
+
+            fleet.controllers.append(uav)
+            fleet.active_flags.append(True)
+            fleet.last_step_positions_u.append(uav.position_u)
+            x_positions[uav.uav_id] = x_start_u
+
+        fleet._assign_responsible_x_ranges(x_positions)
         return fleet

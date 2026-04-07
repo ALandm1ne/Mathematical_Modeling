@@ -210,6 +210,46 @@ class PathGenerator:
             }
         ]
 
+    def generate_cold_start_path(
+        self,
+        current_pos_u: tuple[int, int],
+        target_strip_left_x_u: int,
+    ) -> list[dict]:
+        """Generate initial path from arbitrary start position to first scanning strip."""
+
+        d = self.cfg.derived
+        r = d.uav_scan_radius_u
+        top_y = d.area_height_u - r
+        start_x, start_y = int(current_pos_u[0]), int(current_pos_u[1])
+        target_scan_col_u = int(target_strip_left_x_u + r)
+
+        segments: list[dict] = []
+        if start_x != target_scan_col_u:
+            segments.append(
+                {
+                    "segment_type": "line",
+                    "end_point_u": (target_scan_col_u, start_y),
+                }
+            )
+
+        if start_y != r:
+            segments.append(
+                {
+                    "segment_type": "line",
+                    "end_point_u": (target_scan_col_u, int(r)),
+                }
+            )
+
+        if int(r) != int(top_y):
+            segments.append(
+                {
+                    "segment_type": "line",
+                    "end_point_u": (target_scan_col_u, int(top_y)),
+                }
+            )
+
+        return segments
+
 
 class ReplanningEngine:
     """动态重规划主引擎"""
@@ -397,7 +437,7 @@ class ReplanningEngine:
     
     def process_pending_replans(
         self,
-        pending_replans: list[tuple[int, str]],  # [(uav_id, boundary_type), ...]
+        pending_replans: list[tuple[int, str]],  # [(uav_id, boundary_type), ...], boundary_type in {top,bottom,cold_start}
         fleet_controller,  # UAVFleetController
         particle_system,   # ParticleSystem
         current_step: int,
@@ -458,22 +498,29 @@ class ReplanningEngine:
 
             if selected_strip_left_x_u is None:
                 print(f"[REPLANNING] UAV#{uav_id}: no feasible strip found, fallback to keep current lane")
-                fallback_strip_left_x_u = self._select_fallback_strip_left_x(
-                    current_scan_col_u=current_scan_col_u,
-                    preferred_direction=_direction_d,
-                    x_range_u=x_range,
-                )
-                if fallback_strip_left_x_u is not None:
-                    new_segments = self.path_gen.generate_90degree_approach(
-                        current_line_x_u=current_scan_col_u,
+                if boundary_type == "cold_start":
+                    fallback_strip_left_x_u = int(current_scan_col_u - r_u)
+                    new_segments = self.path_gen.generate_cold_start_path(
+                        current_pos_u=planned_pos_u,
                         target_strip_left_x_u=fallback_strip_left_x_u,
-                        boundary_type=boundary_type,
                     )
                 else:
-                    new_segments = self.path_gen.generate_keep_lane_fallback(
-                        current_line_x_u=current_scan_col_u,
-                        boundary_type=boundary_type,
+                    fallback_strip_left_x_u = self._select_fallback_strip_left_x(
+                        current_scan_col_u=current_scan_col_u,
+                        preferred_direction=_direction_d,
+                        x_range_u=x_range,
                     )
+                    if fallback_strip_left_x_u is not None:
+                        new_segments = self.path_gen.generate_90degree_approach(
+                            current_line_x_u=current_scan_col_u,
+                            target_strip_left_x_u=fallback_strip_left_x_u,
+                            boundary_type=boundary_type,
+                        )
+                    else:
+                        new_segments = self.path_gen.generate_keep_lane_fallback(
+                            current_line_x_u=current_scan_col_u,
+                            boundary_type=boundary_type,
+                        )
                 if not new_segments:
                     print(f"[REPLANNING] UAV#{uav_id}: fallback path generation failed")
                     continue
@@ -493,7 +540,7 @@ class ReplanningEngine:
                     tolerance_threshold=float(tol_info.get("threshold", 0.0)),
                 )
                 continue
-            
+
             # 生成接入路径
             derived = self.cfg.derived
             best_left_x_u = int(tol_info.get("best_left_x", -1))
@@ -506,11 +553,17 @@ class ReplanningEngine:
                 f"switched={bool(tol_info.get('switched', False))}"
             )
             try:
-                new_segments = self.path_gen.generate_90degree_approach(
-                    current_line_x_u=current_scan_col_u,
-                    target_strip_left_x_u=selected_strip_left_x_u,
-                    boundary_type=boundary_type,
-                )
+                if boundary_type == "cold_start":
+                    new_segments = self.path_gen.generate_cold_start_path(
+                        current_pos_u=planned_pos_u,
+                        target_strip_left_x_u=selected_strip_left_x_u,
+                    )
+                else:
+                    new_segments = self.path_gen.generate_90degree_approach(
+                        current_line_x_u=current_scan_col_u,
+                        target_strip_left_x_u=selected_strip_left_x_u,
+                        boundary_type=boundary_type,
+                    )
             except Exception as e:
                 print(
                     f"[REPLANNING] UAV#{uav_id}: failed to generate path to "

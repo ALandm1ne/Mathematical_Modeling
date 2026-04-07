@@ -38,6 +38,10 @@ class UAVFleetModeConfig:
     missing_path_action: str = "warn_and_exit"  # 缺失路径时行为：warn_and_exit/raise
     path_source_conflict_action: str = "warn_and_exit"  # API 路径与配置路径冲突时行为
     resolve_relative_to_script_dir: bool = True  # 路径是否按 script_dir 解析相对路径
+    dynamic_bootstrap_without_external_paths: bool = False  # 动态重规划冷启动：忽略外部路径 JSON
+    dynamic_bootstrap_uav_count: int = 2         # 冷启动 UAV 数量
+    dynamic_bootstrap_base_pos_km: tuple[float, float] = (-314.0, -323.0)  # 起飞基地坐标（km）
+    dynamic_bootstrap_start_y_km: float = 0.0    # 冷启动初始 y（km）
 
 
 @dataclass
@@ -221,6 +225,13 @@ class AppConfig:
             "raise",
         }:
             raise ValueError("require_external_paths requires valid missing_path_action")
+        if self.uav_fleet_mode.dynamic_bootstrap_uav_count <= 0:
+            raise ValueError("dynamic_bootstrap_uav_count must be > 0")
+        if not math.isfinite(float(self.uav_fleet_mode.dynamic_bootstrap_start_y_km)):
+            raise ValueError("dynamic_bootstrap_start_y_km must be finite")
+        bx, by = self.uav_fleet_mode.dynamic_bootstrap_base_pos_km
+        if not (math.isfinite(float(bx)) and math.isfinite(float(by))):
+            raise ValueError("dynamic_bootstrap_base_pos_km must contain finite values")
 
     def configure_device(self) -> None:
         """按策略检测并配置运行设备（cuda/cpu）。"""

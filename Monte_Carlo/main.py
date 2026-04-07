@@ -93,22 +93,39 @@ def main() -> None:
     # 以当前脚本目录为根，保证路径在不同启动目录下都一致。
     script_dir = os.path.dirname(os.path.abspath(__file__))           # 定位 main.py 所在目录。
     cfg = build_default_config(script_dir=script_dir)                 # 构建默认配置与设备信息。
-    resolved_path = _resolve_external_path_source(cfg, script_dir)
-    if resolved_path is None:
-        print("[PATH][WARN] simulation skipped: unresolved external UAV path source.")
-        return
-    cfg.uav_fleet_mode.custom_paths_json = resolved_path
+    bootstrap_mode = (
+        cfg.dynamic_replanning.enable
+        and cfg.uav_fleet_mode.dynamic_bootstrap_without_external_paths
+    )
+    resolved_path: str | None = None
+    if bootstrap_mode:
+        cfg.uav_fleet_mode.require_external_paths = False
+        if not cfg.runtime.realtime_visualization:
+            cfg.runtime.realtime_visualization = True
+            print("[VIS] realtime visualization enabled for dynamic bootstrap inspection")
+        print("[PATH] dynamic bootstrap mode enabled: external UAV path JSON will be ignored")
+    else:
+        resolved_path = _resolve_external_path_source(cfg, script_dir)
+        if resolved_path is None:
+            print("[PATH][WARN] simulation skipped: unresolved external UAV path source.")
+            return
+        cfg.uav_fleet_mode.custom_paths_json = resolved_path
     assert cfg.device_runtime is not None                             # 设备信息必须已经初始化。
 
     print(f"Using CUDA device: {cfg.device_runtime.gpu_name}")       # 告知当前运行设备。
-    print(f"[PATH] loaded UAV path file: {resolved_path}")           # 明确提示当前实际使用的模板文件。
+    if resolved_path is not None:
+        print(f"[PATH] loaded UAV path file: {resolved_path}")       # 明确提示当前实际使用的模板文件。
 
     # DataLogger 会在初始化时创建带时间戳的运行目录。
     data_logger = DataLogger(cfg)                                     # 负责记录轨迹和导出文件。
     print(f"Results directory: {data_logger.run_results_dir}")        # 打印结果目录，便于快速定位。
 
     particle_system = ParticleSystem(cfg)                             # 创建 GPU 粒子系统。
-    fleet_controller = UAVFleetBuilder.from_custom_json(cfg, resolved_path)  # 创建 UAV 机群控制器。
+    if bootstrap_mode:
+        fleet_controller = UAVFleetBuilder.from_dynamic_bootstrap(cfg)
+    else:
+        assert resolved_path is not None
+        fleet_controller = UAVFleetBuilder.from_custom_json(cfg, resolved_path)  # 创建 UAV 机群控制器。
     print(f"[PATH] loaded UAV count: {len(fleet_controller.controllers)}")  # 明确提示实际加载的 UAV 数量。
     data_logger.init_uav_trace_fleet(fleet_controller.controllers)    # 初始化轨迹缓存。
 
@@ -124,6 +141,15 @@ def main() -> None:
     if cfg.dynamic_replanning.enable:
         replanning_engine = ReplanningEngine(cfg)
         print("[REPLANNING] Dynamic replanning engine initialized (enabled)")
+        if bootstrap_mode:
+            initial_pending = [(uav.uav_id, "cold_start") for uav in fleet_controller.controllers]
+            replanning_engine.process_pending_replans(
+                pending_replans=initial_pending,
+                fleet_controller=fleet_controller,
+                particle_system=particle_system,
+                current_step=0,
+                elapsed_time_h=0.0,
+            )
     else:
         print("[REPLANNING] Dynamic replanning engine disabled")
 
